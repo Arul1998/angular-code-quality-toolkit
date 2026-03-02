@@ -23,6 +23,11 @@
         "command": "angularCodeQualityToolkit.runTsPrune",
         "title": "Angular Code Quality: Run ts-prune",
         "category": "Angular Code Quality"
+      },
+      {
+        "command": "angularCodeQualityToolkit.runEslint",
+        "title": "Angular Code Quality: Run ESLint",
+        "category": "Angular Code Quality"
       }
     ],
     "menus": {
@@ -34,6 +39,11 @@
         },
         {
           "command": "angularCodeQualityToolkit.runTsPrune",
+          "when": "workspaceFolderCount > 0",
+          "group": "navigation"
+        },
+        {
+          "command": "angularCodeQualityToolkit.runEslint",
           "when": "workspaceFolderCount > 0",
           "group": "navigation"
         }
