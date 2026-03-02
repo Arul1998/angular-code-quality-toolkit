@@ -1,0 +1,55 @@
+{
+  "name": "angular-code-quality-toolkit",
+  "displayName": "Angular Code Quality Toolkit",
+  "description": "VS Code extension to run Angular code-quality tools (depcheck, ts-prune, ESLint) and help clean unused code and dependencies.",
+  "version": "0.0.1",
+  "publisher": "arul1998",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.84.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "angularCodeQualityToolkit.runDepcheck",
+        "title": "Angular Code Quality: Run depcheck",
+        "category": "Angular Code Quality"
+      },
+      {
+        "command": "angularCodeQualityToolkit.runTsPrune",
+        "title": "Angular Code Quality: Run ts-prune",
+        "category": "Angular Code Quality"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "angularCodeQualityToolkit.runDepcheck",
+          "when": "workspaceFolderCount > 0",
+          "group": "navigation"
+        },
+        {
+          "command": "angularCodeQualityToolkit.runTsPrune",
+          "when": "workspaceFolderCount > 0",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "echo \"No lint configured for the extension itself\"",
+    "test": "echo \"No tests yet\""
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.84.0",
+    "typescript": "^5.3.0"
+  }
+}
