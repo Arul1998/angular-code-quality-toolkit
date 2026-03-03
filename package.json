@@ -1,9 +1,13 @@
 {
   "name": "angular-code-quality-toolkit",
   "displayName": "Angular Code Quality Toolkit",
-  "description": "VS Code extension to run Angular code-quality tools (depcheck, ts-prune, ESLint) and help clean unused code and dependencies.",
+  "description": "VS Code extension to run Angular code-quality tools (depcheck, ts-prune, ESLint, stylelint), add ESLint to Angular projects, and help clean unused code, dependencies, and styles.",
   "version": "0.0.1",
   "publisher": "arul1998",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Arul1998/angular-code-quality-toolkit"
+  },
   "license": "MIT",
   "engines": {
     "vscode": "^1.84.0"
@@ -28,6 +32,16 @@
         "command": "angularCodeQualityToolkit.runEslint",
         "title": "Angular Code Quality: Run ESLint",
         "category": "Angular Code Quality"
+      },
+      {
+        "command": "angularCodeQualityToolkit.addEslintToAngular",
+        "title": "Angular Code Quality: Add ESLint to Angular project",
+        "category": "Angular Code Quality"
+      },
+      {
+        "command": "angularCodeQualityToolkit.runStylelint",
+        "title": "Angular Code Quality: Run stylelint",
+        "category": "Angular Code Quality"
       }
     ],
     "menus": {
@@ -46,6 +60,16 @@
           "command": "angularCodeQualityToolkit.runEslint",
           "when": "workspaceFolderCount > 0",
           "group": "navigation"
+        },
+        {
+          "command": "angularCodeQualityToolkit.addEslintToAngular",
+          "when": "workspaceFolderCount > 0",
+          "group": "navigation"
+        },
+        {
+          "command": "angularCodeQualityToolkit.runStylelint",
+          "when": "workspaceFolderCount > 0",
+          "group": "navigation"
         }
       ]
     }
@@ -60,6 +84,7 @@
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.84.0",
+    "ts-prune": "^0.10.3",
     "typescript": "^5.3.0"
   }
 }
