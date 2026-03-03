@@ -29,12 +29,45 @@ It is designed to help you quickly **spot unused dependencies, dead TypeScript c
     - Reads `package.json` from the workspace root.
     - Verifies that a `"lint"` script exists.
     - Shows friendly warnings if `package.json` is missing or invalid, or if no `"lint"` script is defined.
-  - Ideal for enforcing project-specific **ESLint rules** on your Angular codebase.
+  - Use ESLint rules like `@typescript-eslint/no-unused-vars` to find **unused methods, variables, and parameters** in your code.
+
+- **Add ESLint to Angular project**
+  - Command: `Angular Code Quality: Add ESLint to Angular project`
+  - Runs `ng add @angular-eslint/schematics` in the workspace to **migrate from TSLint to ESLint** (or add ESLint if you don’t have it).
+  - Use this when `ng lint` fails with “Cannot find builder: tslint”. After it finishes, use **Run ESLint** to lint your code.
+
+- **Run stylelint (styles)**
+  - Command: `Angular Code Quality: Run stylelint`
+  - Runs stylelint on your CSS/SCSS (uses `npm run lint:styles` or `npm run stylelint` if defined in `package.json`, otherwise `npx stylelint "src/**/*.scss" "src/**/*.css"`).
+  - Helps find **style issues and unused/deprecated CSS** in Angular component styles. Results appear in the Problems view and in the editor.
 
 - **Unified output channel**
   - All tools write into the same `Angular Code Quality` output channel.
   - Clear process start / end messages and non-zero exit code warnings.
   - If a CLI process cannot be started (e.g. tool not installed or not on PATH), you get both an output message **and** a VS Code error notification.
+
+- **In-editor results (Problems view and squiggles)**
+  - After each command runs, the extension parses the tool output and shows **diagnostics** in VS Code:
+    - **Problems** panel (`View → Problems`) lists every issue with **file, line, and message**. Click an entry to jump to that line.
+    - **Editor squiggles**: open a file and you’ll see the reported line (and column for ESLint) highlighted with the message.
+  - **depcheck**: unused dependencies are marked in `package.json`; missing dependencies are marked in the file that uses them.
+  - **ts-prune**: each unused export is shown at the correct file and line (when ts-prune outputs line numbers).
+  - **ESLint**: each lint error/warning appears at the exact file:line:column (supports standard and stylish-style output).
+  - **stylelint**: each style issue appears at file:line:column in the Problems view.
+
+---
+
+## Unused methods, variables, and styles
+
+- **Unused methods and variables**  
+  The extension does not run a separate “unused code” tool. Use **ESLint** with the right rules:
+  - Add **`@typescript-eslint/no-unused-vars`** (and optionally `@typescript-eslint/no-unused-expressions`) in your ESLint config so **Run ESLint** reports unused variables, parameters, and dead code.
+  - After adding ESLint to your Angular project (see **Add ESLint to Angular project**), extend your config with these rules; then **Angular Code Quality: Run ESLint** will show them in the Problems view and in the editor.
+
+- **Styles (CSS/SCSS)**  
+  Use **Angular Code Quality: Run stylelint** to lint your styles. Install stylelint in the project if needed:
+  - `npm install --save-dev stylelint stylelint-scss`
+  - Add a `stylelint` config (e.g. `.stylelintrc.json`) or a `"lint:styles"` / `"stylelint"` script in `package.json` if you want a custom glob. The extension will run that script when present; otherwise it runs `npx stylelint "src/**/*.scss" "src/**/*.css"`.
 
 ---
 
@@ -49,11 +82,13 @@ In your Angular project:
 
 - **depcheck**
   - Either installed globally, or available via `npx depcheck`.
+  - The extension runs `npx depcheck --json` to show results in the editor.
   - Typical setup (project-local):
     - `npm install --save-dev depcheck`
 
 - **ts-prune**
   - Either installed globally, or available via `npx ts-prune`.
+  - When ts-prune outputs `file:line - exportName`, the extension shows each unused export at the correct file and line in the Problems view.
   - Typical setup (project-local):
     - `npm install --save-dev ts-prune`
   - Recommended: ensure your Angular app has a suitable tsconfig (for example `tsconfig.app.json`) in the workspace root. The extension will:
@@ -64,12 +99,14 @@ In your Angular project:
   - Your Angular workspace should have a `"lint"` script in `package.json`, usually something like:
     - `"lint": "ng lint"` (Angular CLI)
     - or `"lint": "eslint \"src/**/*.{ts,tsx}\""` (ESLint directly)
-  - The extension:
-    - Reads `package.json` from the workspace root.
-    - Verifies there is a `"lint"` script.
-    - Shows a warning if the script is missing, and will not run ESLint in that case.
+  - If your project still uses TSLint, run **Angular Code Quality: Add ESLint to Angular project** to migrate.
+  - The extension verifies there is a `"lint"` script before running ESLint.
 
-> **Note:** The extension itself does **not** bundle depcheck, ts-prune, or ESLint. It orchestrates tools that you already use in your Angular project, and adds safer error handling around them.
+- **stylelint (optional, for Run stylelint)**
+  - Install in the project: `npm install --save-dev stylelint stylelint-scss`
+  - Optionally add a `"lint:styles"` or `"stylelint"` script in `package.json`; otherwise the extension runs `npx stylelint "src/**/*.scss" "src/**/*.css"`.
+
+> **Note:** The extension does **not** bundle depcheck, ts-prune, ESLint, or stylelint. It runs tools you install in your Angular project and shows their results in the editor.
 
 ---
 
@@ -83,9 +120,11 @@ In your Angular project:
    - `Angular Code Quality: Run depcheck`
    - `Angular Code Quality: Run ts-prune`
    - `Angular Code Quality: Run ESLint`
-5. Watch the **Angular Code Quality** output channel for:
-   - CLI output from the tool.
-   - Process exit code and any warnings.
+   - `Angular Code Quality: Add ESLint to Angular project` (to migrate from TSLint or add ESLint)
+   - `Angular Code Quality: Run stylelint` (for CSS/SCSS)
+5. Check results in two places:
+   - **Output** channel: select **Angular Code Quality** to see the raw CLI output.
+   - **Problems** panel and **editor**: issues appear as diagnostics—click a problem to open the file at that line and fix unused code or dependencies.
 
 If something goes wrong (e.g. tools not installed, `tsconfig.app.json` missing, or `package.json` malformed), the extension:
 
@@ -152,9 +191,9 @@ In the extension project itself (this repository):
 
 ---
 
-## Packaging and Publishing
+## Packaging and Publishing (Visual Studio Marketplace)
 
-To package and publish to the VS Code Marketplace:
+To package and publish this extension on the **Visual Studio Marketplace** so others can install it from VS Code:
 
 1. Install `vsce` (if you have not already):
    - `npm install -g vsce`
