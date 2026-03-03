@@ -1,6 +1,14 @@
 import * as vscode from 'vscode';
 import { exec } from 'child_process';
 import * as path from 'path';
+import {
+  parseDepcheckOutput,
+  parseTsPruneOutput,
+  parseEslintOutput,
+  parseStylelintOutput,
+} from './diagnostics';
+
+const DIAGNOSTIC_SOURCE = 'Angular Code Quality';
 
 function getWorkspaceFolder(): vscode.WorkspaceFolder | undefined {
   const folders = vscode.workspace.workspaceFolders;
@@ -17,17 +25,31 @@ function createOutputChannel(): vscode.OutputChannel {
   return channel;
 }
 
-function runCommand(command: string, cwd: string, output: vscode.OutputChannel): void {
+type OnDoneCallback = (stdout: string, stderr: string, exitCode: number | null) => void;
+
+function runCommand(
+  command: string,
+  cwd: string,
+  output: vscode.OutputChannel,
+  onDone?: OnDoneCallback
+): void {
   output.appendLine(`> ${command}`);
+
+  let stdout = '';
+  let stderr = '';
 
   const child = exec(command, { cwd });
 
   child.stdout?.on('data', (data: string) => {
-    output.append(data.toString());
+    const s = data.toString();
+    stdout += s;
+    output.append(s);
   });
 
   child.stderr?.on('data', (data: string) => {
-    output.append(data.toString());
+    const s = data.toString();
+    stderr += s;
+    output.append(s);
   });
 
   child.on('error', (err: Error) => {
@@ -36,6 +58,7 @@ function runCommand(command: string, cwd: string, output: vscode.OutputChannel):
       'Angular Code Quality Toolkit: Failed to start the underlying CLI process. ' +
         'Make sure the required tool is installed and available on your PATH.'
     );
+    onDone?.(stdout, stderr, null);
   });
 
   child.on('exit', (code: number | null, signal: string | null) => {
@@ -50,10 +73,32 @@ function runCommand(command: string, cwd: string, output: vscode.OutputChannel):
         );
       }
     }
+    onDone?.(stdout, stderr, code);
   });
 }
 
+function setDiagnosticsFromEntries(
+  collection: vscode.DiagnosticCollection,
+  entries: { uri: vscode.Uri; diagnostic: vscode.Diagnostic }[]
+): void {
+  collection.clear();
+  const byUri = new Map<string, vscode.Diagnostic[]>();
+  for (const { uri, diagnostic } of entries) {
+    diagnostic.source = DIAGNOSTIC_SOURCE;
+    const key = uri.toString();
+    const list = byUri.get(key) ?? [];
+    list.push(diagnostic);
+    byUri.set(key, list);
+  }
+  for (const [uriStr, diagnostics] of byUri) {
+    collection.set(vscode.Uri.parse(uriStr), diagnostics);
+  }
+}
+
 export function activate(context: vscode.ExtensionContext): void {
+  const diagnosticCollection = vscode.languages.createDiagnosticCollection(DIAGNOSTIC_SOURCE);
+  context.subscriptions.push(diagnosticCollection);
+
   const runDepcheck = vscode.commands.registerCommand(
     'angularCodeQualityToolkit.runDepcheck',
     () => {
@@ -66,7 +111,22 @@ export function activate(context: vscode.ExtensionContext): void {
       const output = createOutputChannel();
       output.appendLine(`Running depcheck in ${cwd}...\n`);
 
-      runCommand('npx depcheck', cwd, output);
+      runCommand('npx depcheck --json', cwd, output, (stdout, stderr) => {
+        const raw = stdout.trim() || stderr.trim();
+        const packageJsonPath = path.join(cwd, 'package.json');
+        vscode.workspace.fs
+          .readFile(vscode.Uri.file(packageJsonPath))
+          .then((buf) => buf.toString(), () => undefined)
+          .then((packageJsonContent) => {
+            const entries = parseDepcheckOutput(raw, cwd, packageJsonPath, packageJsonContent);
+            setDiagnosticsFromEntries(diagnosticCollection, entries);
+            if (entries.length > 0) {
+              vscode.window.showInformationMessage(
+                `Angular Code Quality: Found ${entries.length} issue(s). Check Problems view and editor.`
+              );
+            }
+          });
+      });
     }
   );
 
@@ -104,7 +164,16 @@ export function activate(context: vscode.ExtensionContext): void {
           ? 'npx ts-prune -p tsconfig.app.json'
           : 'npx ts-prune';
 
-        runCommand(command, cwd, output);
+        runCommand(command, cwd, output, (stdout, stderr) => {
+          const raw = stdout.trim() || stderr.trim();
+          const entries = parseTsPruneOutput(raw, cwd, workspaceFolder.uri);
+          setDiagnosticsFromEntries(diagnosticCollection, entries);
+          if (entries.length > 0) {
+            vscode.window.showInformationMessage(
+              `Angular Code Quality: Found ${entries.length} unused export(s). Check Problems view and editor.`
+            );
+          }
+        });
         });
     }
   );
@@ -167,12 +236,107 @@ export function activate(context: vscode.ExtensionContext): void {
             return;
           }
 
-          runCommand('npm run lint', cwd, output);
+          runCommand('npm run lint', cwd, output, (stdout, stderr, exitCode) => {
+            const raw = stdout.trim() || stderr.trim();
+            const isTslintError =
+              raw.includes('tslint') ||
+              raw.includes('Cannot find builder') ||
+              exitCode === 127;
+            if (isTslintError && (raw.includes('tslint') || raw.includes('Cannot find builder'))) {
+              vscode.window.showErrorMessage(
+                'Angular Code Quality: This project still uses TSLint (removed in Angular 12+). ' +
+                  'Migrate to ESLint with: ng add @angular-eslint/schematics'
+              );
+            }
+            const entries = parseEslintOutput(raw, cwd, workspaceFolder.uri);
+            setDiagnosticsFromEntries(diagnosticCollection, entries);
+            if (entries.length > 0) {
+              vscode.window.showInformationMessage(
+                `Angular Code Quality: Found ${entries.length} lint issue(s). Check Problems view and editor.`
+              );
+            }
+          });
         });
     }
   );
 
-  context.subscriptions.push(runDepcheck, runTsPrune, runEslint);
+  const runAddEslint = vscode.commands.registerCommand(
+    'angularCodeQualityToolkit.addEslintToAngular',
+    () => {
+      const workspaceFolder = getWorkspaceFolder();
+      if (!workspaceFolder) {
+        return;
+      }
+      const cwd = workspaceFolder.uri.fsPath;
+      const output = createOutputChannel();
+      output.appendLine('Adding ESLint to Angular project (migrating from TSLint)...\n');
+      output.appendLine('This runs: ng add @angular-eslint/schematics\n');
+      runCommand('npx ng add @angular-eslint/schematics', cwd, output, () => {
+        vscode.window.showInformationMessage(
+          'Angular Code Quality: ESLint setup finished. Check the output channel. Run "Angular Code Quality: Run ESLint" after setup.'
+        );
+      });
+    }
+  );
+
+  const runStylelint = vscode.commands.registerCommand(
+    'angularCodeQualityToolkit.runStylelint',
+    () => {
+      const workspaceFolder = getWorkspaceFolder();
+      if (!workspaceFolder) {
+        return;
+      }
+      const cwd = workspaceFolder.uri.fsPath;
+      const output = createOutputChannel();
+      output.appendLine(`Running stylelint in ${cwd}...\n`);
+
+      const packageJsonUri = vscode.Uri.file(path.join(cwd, 'package.json'));
+      vscode.workspace.fs
+        .readFile(packageJsonUri)
+        .then(
+          (buffer) => buffer.toString(),
+          () => undefined as unknown as string
+        )
+        .then((contents) => {
+          let command: string;
+          if (contents) {
+            try {
+              const pkg = JSON.parse(contents) as { scripts?: Record<string, string> };
+              if (pkg.scripts && (pkg.scripts['lint:styles'] || pkg.scripts.stylelint)) {
+                command = pkg.scripts['lint:styles'] ? 'npm run lint:styles' : 'npm run stylelint';
+              } else {
+                command = 'npx stylelint "src/**/*.scss" "src/**/*.css"';
+              }
+            } catch {
+              command = 'npx stylelint "src/**/*.scss" "src/**/*.css"';
+            }
+          } else {
+            command = 'npx stylelint "src/**/*.scss" "src/**/*.css"';
+          }
+
+          runCommand(command, cwd, output, (stdout, stderr, exitCode) => {
+            const raw = stdout.trim() || stderr.trim();
+            const entries = parseStylelintOutput(raw, cwd);
+            setDiagnosticsFromEntries(diagnosticCollection, entries);
+
+            if (entries.length > 0) {
+              output.appendLine(`\n[Angular Code Quality] Found ${entries.length} style issue(s). Check the Problems view and editor.`);
+              vscode.window.showInformationMessage(
+                `Angular Code Quality: Found ${entries.length} style issue(s). Check Problems view and editor.`
+              );
+            } else {
+              if (raw.length > 0) {
+                output.appendLine('\n[Angular Code Quality] Stylelint finished. No issues reported in the output (or output format was not recognized).');
+              } else {
+                output.appendLine('\n[Angular Code Quality] Stylelint finished with no output. No style issues found—or no SCSS/CSS files were linted (check that src/**/*.scss and src/**/*.css exist and stylelint is installed).');
+              }
+            }
+          });
+        });
+    }
+  );
+
+  context.subscriptions.push(runDepcheck, runTsPrune, runEslint, runAddEslint, runStylelint);
 }
 
 export function deactivate(): void {
