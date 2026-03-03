@@ -40,9 +40,9 @@ export function parseDepcheckOutput(
     for (const [dep, files] of Object.entries(missing)) {
       const firstFile = Array.isArray(files) ? files[0] : (files as unknown as string);
       if (firstFile && typeof firstFile === 'string') {
-        const filePath = path.isAbsolute(firstFile) ? firstFile : path.join(cwd, firstFile);
+        const uri = toFileUri(cwd, firstFile);
         entries.push({
-          uri: vscode.Uri.file(filePath),
+          uri,
           diagnostic: new vscode.Diagnostic(
             new vscode.Range(0, 0, 0, 0),
             `Missing dependency: ${dep}`,

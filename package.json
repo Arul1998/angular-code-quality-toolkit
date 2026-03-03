@@ -13,8 +13,23 @@
     "vscode": "^1.84.0"
   },
   "categories": [
+    "Linters",
     "Other"
   ],
+  "keywords": [
+    "angular",
+    "depcheck",
+    "ts-prune",
+    "eslint",
+    "stylelint",
+    "code quality",
+    "unused code",
+    "lint"
+  ],
+  "homepage": "https://github.com/Arul1998/angular-code-quality-toolkit#readme",
+  "bugs": {
+    "url": "https://github.com/Arul1998/angular-code-quality-toolkit/issues"
+  },
   "main": "./out/extension.js",
   "contributes": {
     "commands": [

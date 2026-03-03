@@ -10,6 +10,8 @@ import {
 
 const DIAGNOSTIC_SOURCE = 'Angular Code Quality';
 
+let outputChannel: vscode.OutputChannel | undefined;
+
 function getWorkspaceFolder(): vscode.WorkspaceFolder | undefined {
   const folders = vscode.workspace.workspaceFolders;
   if (!folders || folders.length === 0) {
@@ -19,10 +21,12 @@ function getWorkspaceFolder(): vscode.WorkspaceFolder | undefined {
   return folders[0];
 }
 
-function createOutputChannel(): vscode.OutputChannel {
-  const channel = vscode.window.createOutputChannel('Angular Code Quality');
-  channel.show(true);
-  return channel;
+function getOutputChannel(): vscode.OutputChannel {
+  if (!outputChannel) {
+    outputChannel = vscode.window.createOutputChannel('Angular Code Quality');
+  }
+  outputChannel.show(true);
+  return outputChannel;
 }
 
 type OnDoneCallback = (stdout: string, stderr: string, exitCode: number | null) => void;
@@ -108,7 +112,7 @@ export function activate(context: vscode.ExtensionContext): void {
       }
 
       const cwd = workspaceFolder.uri.fsPath;
-      const output = createOutputChannel();
+      const output = getOutputChannel();
       output.appendLine(`Running depcheck in ${cwd}...\n`);
 
       runCommand('npx depcheck --json', cwd, output, (stdout, stderr) => {
@@ -139,7 +143,7 @@ export function activate(context: vscode.ExtensionContext): void {
       }
 
       const cwd = workspaceFolder.uri.fsPath;
-      const output = createOutputChannel();
+      const output = getOutputChannel();
 
       const defaultTsconfig = path.join(cwd, 'tsconfig.app.json');
       output.appendLine(`Running ts-prune in ${cwd}...\n`);
@@ -187,7 +191,7 @@ export function activate(context: vscode.ExtensionContext): void {
       }
 
       const cwd = workspaceFolder.uri.fsPath;
-      const output = createOutputChannel();
+      const output = getOutputChannel();
 
       output.appendLine(`Running ESLint in ${cwd}...\n`);
       output.appendLine(
@@ -268,7 +272,7 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
       const cwd = workspaceFolder.uri.fsPath;
-      const output = createOutputChannel();
+      const output = getOutputChannel();
       output.appendLine('Adding ESLint to Angular project (migrating from TSLint)...\n');
       output.appendLine('This runs: ng add @angular-eslint/schematics\n');
       runCommand('npx ng add @angular-eslint/schematics', cwd, output, () => {
@@ -287,7 +291,7 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
       const cwd = workspaceFolder.uri.fsPath;
-      const output = createOutputChannel();
+      const output = getOutputChannel();
       output.appendLine(`Running stylelint in ${cwd}...\n`);
 
       const packageJsonUri = vscode.Uri.file(path.join(cwd, 'package.json'));
