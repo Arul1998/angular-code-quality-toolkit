@@ -4,6 +4,7 @@
   "description": "VS Code extension to run Angular code-quality tools (depcheck, ts-prune, ESLint, stylelint), add ESLint to Angular projects, and help clean unused code, dependencies, and styles.",
   "version": "0.0.1",
   "publisher": "arul1998",
+  "icon": "assets/icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/Arul1998/angular-code-quality-toolkit"
@@ -14,17 +15,17 @@
   },
   "categories": [
     "Linters",
-    "Other"
+    "Formatters"
   ],
   "keywords": [
     "angular",
-    "depcheck",
-    "ts-prune",
+    "code quality",
     "eslint",
     "stylelint",
-    "code quality",
-    "unused code",
-    "lint"
+    "ts-prune",
+    "depcheck",
+    "cleanup",
+    "refactor"
   ],
   "homepage": "https://github.com/Arul1998/angular-code-quality-toolkit#readme",
   "bugs": {
