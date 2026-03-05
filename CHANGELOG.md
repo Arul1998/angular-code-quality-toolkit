@@ -6,13 +6,26 @@ All notable changes to the Angular Code Quality Toolkit extension are documented
 
 ### Added
 
-- **Run depcheck**: Find unused and missing npm dependencies; results in Output and Problems view with file/line.
-- **Run ts-prune**: Find unused TypeScript exports; uses `tsconfig.app.json` when present; results in Problems view.
-- **Run ESLint**: Run workspace `npm run lint`; parse output and show diagnostics in editor; TSLint migration hint when needed.
-- **Add ESLint to Angular project**: Run `ng add @angular-eslint/schematics` to migrate from TSLint to ESLint.
-- **Run stylelint**: Lint CSS/SCSS via npm script or default globs; results in Problems view.
-- In-editor diagnostics: All tools report issues in the Problems panel and as squiggles in the editor.
-- Path handling: Resolve file paths from project root so "Open" from Problems works on Windows and other platforms.
+- Documentation: Added a ?Using this extension with CI? section (GitHub Actions example) to show how to run the same checks in CI.
+
+### Changed
+
+- Icon: Optimized the extension icon to reduce VSIX size.
+- Marketplace metadata: Updated categories/keywords and ensured repository/homepage/bugs links are set.
+
+---
+
+## [0.0.1] - 2026-03-03
+
+### Added
+
+- depcheck command to find unused/missing npm dependencies.
+- ts-prune command to find unused TypeScript exports.
+- ESLint command (runs workspace `npm run lint`) and shows results in Output and Problems.
+- ?Add ESLint to Angular project? command to help migrate from TSLint to ESLint.
+- stylelint command to lint CSS/SCSS and show results in Output and Problems.
+- In-editor diagnostics (Problems view + squiggles) to jump directly to file/line.
+- Cross-platform path resolution so Problems entries open the correct files.
 
 ### Notes
 
