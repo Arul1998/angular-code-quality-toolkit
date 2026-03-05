@@ -154,6 +154,60 @@ This leads to **leaner bundles**, **more maintainable code**, and **cleaner depe
 
 ---
 
+## Using this extension with CI (recommended)
+
+This extension is designed to **complement**, not replace, CI pipelines. The usual setup is:
+
+- **VS Code extension** → fast feedback while you are editing code.
+- **CI (GitHub Actions, Azure DevOps, etc.)** → enforce the same checks for every PR.
+
+Here is a minimal **GitHub Actions** example that runs the same tools in CI:
+
+```yaml
+name: Angular Code Quality
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  enforce-quality:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check dependencies with depcheck
+        run: npx depcheck
+
+      - name: Find unused exports with ts-prune
+        run: npx ts-prune -p tsconfig.app.json
+
+      - name: Run ESLint
+        run: npm run lint
+
+      - name: Run stylelint (if configured)
+        run: |
+          if npm run lint:styles -- --help >/dev/null 2>&1; then
+            npm run lint:styles
+          elif npm run stylelint -- --help >/dev/null 2>&1; then
+            npm run stylelint
+          else
+            echo "No stylelint npm script configured; skipping CSS/SCSS lint."
+          fi
+```
+
+Use the extension locally for quick, per-file feedback, and let CI enforce the same checks before merges.
+
+---
+
 ## Motivation / Background
 
 The **Angular Code Quality Toolkit** extension was created to make it easier for Angular teams to apply industry-standard code-quality tooling directly from VS Code.
