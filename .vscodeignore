@@ -8,4 +8,6 @@ eslint.config.mjs
 tsconfig.json
 package-lock.json
 .gitignore
+.github/**
+assets/angular-code-quality-icon.png
 !.vscode-test/**
