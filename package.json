@@ -187,7 +187,7 @@
     "watch": "tsc -watch -p ./",
     "lint": "eslint \"src/**/*.ts\"",
     "pretest": "npm run compile",
-    "test": "node --test \"./out/test/**/*.test.js\""
+    "test": "cd out && node --test"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
