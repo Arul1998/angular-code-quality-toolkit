@@ -2,7 +2,7 @@
   "name": "angular-code-quality-toolkit",
   "displayName": "Angular Code Quality Toolkit",
   "description": "VS Code extension to run Angular code-quality tools (depcheck, ts-prune, ESLint, stylelint), add ESLint to Angular projects, and help clean unused code, dependencies, and styles.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "arul1998",
   "icon": "assets/icon.png",
   "repository": {
@@ -68,6 +68,11 @@
         "command": "angularCodeQualityToolkit.clearDiagnostics",
         "title": "Angular Code Quality: Clear results",
         "category": "Angular Code Quality"
+      },
+      {
+        "command": "angularCodeQualityToolkit.selectProject",
+        "title": "Angular Code Quality: Select Angular project",
+        "category": "Angular Code Quality"
       }
     ],
     "menus": {
@@ -106,12 +111,29 @@
           "command": "angularCodeQualityToolkit.clearDiagnostics",
           "when": "workspaceFolderCount > 0",
           "group": "navigation"
+        },
+        {
+          "command": "angularCodeQualityToolkit.selectProject",
+          "when": "workspaceFolderCount > 0",
+          "group": "navigation"
         }
       ]
     },
     "configuration": {
       "title": "Angular Code Quality Toolkit",
       "properties": {
+        "angularCodeQuality.packageManager": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "npm",
+            "yarn",
+            "pnpm",
+            "bun"
+          ],
+          "default": "auto",
+          "description": "Package manager used to run tools and scripts. \"auto\" detects it from the lockfile in the workspace root (pnpm-lock.yaml, yarn.lock, bun.lockb, package-lock.json)."
+        },
         "angularCodeQuality.tsPrune.tsconfigPath": {
           "type": "string",
           "default": "tsconfig.app.json",
@@ -137,6 +159,19 @@
           "type": "boolean",
           "default": true,
           "description": "Request JSON output from stylelint (--formatter json) for more reliable parsing. Disable if your setup does not support it."
+        },
+        "angularCodeQuality.depcheck.ignoreAngularImplicit": {
+          "type": "boolean",
+          "default": true,
+          "description": "Hide depcheck \"unused dependency\" results for packages Angular uses implicitly (@angular/*, zone.js, rxjs, tslib, typescript, karma/jasmine, and builders referenced in angular.json), which are otherwise false positives."
+        },
+        "angularCodeQuality.depcheck.ignores": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Additional package-name patterns to hide from depcheck \"unused dependency\" results. \"*\" is a wildcard (e.g. \"@my-scope/*\")."
         },
         "angularCodeQuality.revealOutputOnRun": {
           "type": "boolean",
