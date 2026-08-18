@@ -39,7 +39,24 @@ It is designed to help you quickly **spot unused dependencies, dead TypeScript c
 - **Run stylelint (styles)**
   - Command: `Angular Code Quality: Run stylelint`
   - Runs stylelint on your CSS/SCSS (uses `npm run lint:styles` or `npm run stylelint` if defined in `package.json`, otherwise `npx stylelint "src/**/*.scss" "src/**/*.css"`).
-  - Helps find **style issues and unused/deprecated CSS** in Angular component styles. Results appear in the Problems view and in the editor.
+  - Helps find **style-rule violations and deprecated/invalid CSS** in Angular component styles. Results appear in the Problems view and in the editor. (Detecting genuinely *unused* CSS selectors requires extra stylelint plugins and is unreliable under Angular's emulated view encapsulation — this command does not claim to do it.)
+
+- **Run all checks**
+  - Command: `Angular Code Quality: Run all checks`
+  - Runs depcheck, ts-prune, ESLint, and stylelint one after another and reports a combined summary.
+
+- **Clear results**
+  - Command: `Angular Code Quality: Clear results`
+  - Removes all diagnostics contributed by the extension from the Problems view and editor.
+
+- **Cancellable, non-blocking runs**
+  - Each command runs with a progress notification you can **cancel** at any time.
+  - Uses `spawn` (not `exec`), so large projects with lots of output no longer fail silently on the old 1 MB buffer limit.
+
+- **Reliable, per-tool results**
+  - ESLint and stylelint are run with JSON output (`--format json` / `--formatter json`) for accurate file/line/column/severity, with automatic fallback to text parsing.
+  - Each tool writes to **its own diagnostics group**, so running one tool never erases another tool's results.
+  - ts-prune exports marked `(used in module)` are skipped to avoid false positives.
 
 - **Unified output channel**
   - All tools write into the same `Angular Code Quality` output channel.
@@ -122,6 +139,8 @@ In your Angular project:
    - `Angular Code Quality: Run ESLint`
    - `Angular Code Quality: Add ESLint to Angular project` (to migrate from TSLint or add ESLint)
    - `Angular Code Quality: Run stylelint` (for CSS/SCSS)
+   - `Angular Code Quality: Run all checks` (runs everything in sequence)
+   - `Angular Code Quality: Clear results` (removes all diagnostics)
 5. Check results in two places:
    - **Output** channel: select **Angular Code Quality** to see the raw CLI output.
    - **Problems** panel and **editor**: issues appear as diagnostics—click a problem to open the file at that line and fix unused code or dependencies.
@@ -130,6 +149,20 @@ If something goes wrong (e.g. tools not installed, `tsconfig.app.json` missing, 
 
 - Logs detailed messages in the output channel, and
 - Shows a VS Code warning or error notification so you can fix your configuration.
+
+---
+
+## Settings
+
+Configure the extension under **Settings → Extensions → Angular Code Quality Toolkit** (or in `settings.json`):
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| `angularCodeQuality.tsPrune.tsconfigPath` | `tsconfig.app.json` | tsconfig (relative to the workspace root) that ts-prune should use. Falls back to running without a project file if missing. |
+| `angularCodeQuality.stylelint.globs` | `["src/**/*.scss", "src/**/*.css"]` | Globs stylelint lints when no `lint:styles`/`stylelint` npm script is defined. |
+| `angularCodeQuality.eslint.useJsonFormat` | `true` | Request JSON from the lint script (`npm run lint -- --format json`) for reliable parsing. Disable if your lint script does not support `--format`. |
+| `angularCodeQuality.stylelint.useJsonFormat` | `true` | Request JSON from stylelint (`--formatter json`). Disable if your setup does not support it. |
+| `angularCodeQuality.revealOutputOnRun` | `true` | Reveal the output channel automatically each time a command runs. |
 
 ---
 
@@ -241,7 +274,10 @@ In the extension project itself (this repository):
    - Press `F5` to run the **Run Extension** debug configuration.
    - A new Extension Development Host window will open where you can:
      - Open an Angular workspace.
-     - Run the three commands from the Command Palette.
+     - Run the commands from the Command Palette.
+4. Run the checks on the extension itself:
+   - `npm run lint` — lints this extension's own TypeScript with ESLint.
+   - `npm test` — runs unit tests for the output parsers.
 
 ---
 
@@ -255,7 +291,7 @@ To package and publish this extension on the **Visual Studio Marketplace** so ot
 3. From the extension project root, run:
    - `npm run compile`
    - `vsce package`
-   - This produces a `.vsix` file (for example `angular-code-quality-toolkit-0.0.1.vsix`).
+   - This produces a `.vsix` file (for example `angular-code-quality-toolkit-0.1.0.vsix`).
 4. To publish a new version to the Marketplace:
    - Update the `"version"` in `package.json`.
    - Commit and push your changes.
@@ -265,6 +301,6 @@ To package and publish this extension on the **Visual Studio Marketplace** so ot
 
 You can also install the `.vsix` locally by running:
 
-- `code --install-extension angular-code-quality-toolkit-0.0.1.vsix`
+- `code --install-extension angular-code-quality-toolkit-0.1.0.vsix`
 
 or using **Extensions → … → Install from VSIX** inside VS Code.
