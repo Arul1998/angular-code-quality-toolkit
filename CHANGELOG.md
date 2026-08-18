@@ -2,6 +2,26 @@
 
 All notable changes to the Angular Code Quality Toolkit extension are documented in this file.
 
+## [0.2.0] - Unreleased
+
+### Added
+
+- **Angular-aware depcheck.** "Unused dependency" results now hide packages Angular uses implicitly — `@angular/*`, `@angular-devkit/*`, `zone.js`, `rxjs`, `tslib`, `typescript`, karma/jasmine, and any builder referenced in `angular.json` — so depcheck stops flagging framework packages as unused.
+  - Toggle with `angularCodeQuality.depcheck.ignoreAngularImplicit` (default on).
+  - Add your own patterns with `angularCodeQuality.depcheck.ignores` (supports `*` wildcards). Missing dependencies are never hidden.
+- **`angular.json` project awareness.** In multi-project workspaces (monorepos, apps + libs), the extension reads `angular.json` and targets a selected project instead of assuming everything lives at the workspace root.
+  - New command **"Select Angular project"** and a status-bar item showing the active project (click to change).
+  - ts-prune now uses the active project's build `tsConfig` (e.g. `apps/web/tsconfig.app.json`) unless `angularCodeQuality.tsPrune.tsconfigPath` is set explicitly.
+  - In multi-project workspaces, **ESLint lints the selected project** via `ng lint <project>` (when the project declares a lint target) instead of always running the root `lint` script.
+  - stylelint's default globs are scoped to the active project's source root (e.g. `apps/web/src/**`) unless `angularCodeQuality.stylelint.globs` is set explicitly. When a `lint:styles`/`stylelint` npm script exists, that script's own patterns win (noted in the output channel).
+  - Supports both Angular's `architect` and Nx-style `targets` keys; applications are offered before libraries.
+  - "Add ESLint to Angular project" now runs `ng add` through the detected package manager (`pnpm exec` / `yarn exec` / `bunx` / `npx`) instead of always `npx`.
+- **Package-manager support.** Tools and scripts now run with the workspace's package manager — npm, yarn, pnpm, or bun — detected automatically from the lockfile (`pnpm-lock.yaml`, `yarn.lock`, `bun.lockb`/`bun.lock`, `package-lock.json`).
+  - New setting `angularCodeQuality.packageManager` (`auto` | `npm` | `yarn` | `pnpm` | `bun`) to override detection.
+  - Binaries run via the manager's local runner (`npx --yes`, `pnpm exec`, `yarn exec`, `bunx`) so a project-local copy is preferred over fetching a random one.
+  - "Tool not installed" hints now use the detected manager's add command (e.g. `pnpm add --save-dev …`).
+  - The detected package manager is shown in the output channel for each run.
+
 ## [0.1.0] - 2026-08-18
 
 ### Added

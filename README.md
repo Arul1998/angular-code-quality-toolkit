@@ -13,6 +13,7 @@ It is designed to help you quickly **spot unused dependencies, dead TypeScript c
   - Uses `npx depcheck` in the current workspace folder.
   - Shows output in the `Angular Code Quality` output channel.
   - Helps identify **unused dependencies** and **missing dependencies** in your Angular workspace.
+  - **Angular-aware:** packages Angular uses implicitly (`@angular/*`, `zone.js`, `rxjs`, `tslib`, `typescript`, karma/jasmine, and builders from `angular.json`) are filtered out of "unused" results, so you see real cleanup candidates instead of framework noise.
 
 - **Run ts-prune**
   - Command: `Angular Code Quality: Run ts-prune`
@@ -52,6 +53,16 @@ It is designed to help you quickly **spot unused dependencies, dead TypeScript c
 - **Cancellable, non-blocking runs**
   - Each command runs with a progress notification you can **cancel** at any time.
   - Uses `spawn` (not `exec`), so large projects with lots of output no longer fail silently on the old 1 MB buffer limit.
+
+- **Angular project–aware (monorepo friendly)**
+  - Reads `angular.json` and targets a selected project, instead of assuming everything is at the workspace root.
+  - Command **`Angular Code Quality: Select Angular project`** and a status-bar item (click to switch project).
+  - ts-prune uses the active project's build `tsConfig`; stylelint scopes its globs to the project's source root — both overridable via settings.
+  - Understands multi-project workspaces (apps + libraries) and Nx-style `targets`.
+
+- **Works with your package manager**
+  - Detects npm, yarn, pnpm, or bun from the workspace lockfile and runs tools/scripts accordingly (`npx --yes`, `pnpm exec`, `yarn exec`, `bunx`), preferring the project-local tool over a random fetched copy.
+  - Override detection with the `angularCodeQuality.packageManager` setting.
 
 - **Reliable, per-tool results**
   - ESLint and stylelint are run with JSON output (`--format json` / `--formatter json`) for accurate file/line/column/severity, with automatic fallback to text parsing.
@@ -141,6 +152,7 @@ In your Angular project:
    - `Angular Code Quality: Run stylelint` (for CSS/SCSS)
    - `Angular Code Quality: Run all checks` (runs everything in sequence)
    - `Angular Code Quality: Clear results` (removes all diagnostics)
+   - `Angular Code Quality: Select Angular project` (choose which `angular.json` project to target)
 5. Check results in two places:
    - **Output** channel: select **Angular Code Quality** to see the raw CLI output.
    - **Problems** panel and **editor**: issues appear as diagnostics—click a problem to open the file at that line and fix unused code or dependencies.
@@ -158,10 +170,13 @@ Configure the extension under **Settings → Extensions → Angular Code Quality
 
 | Setting | Default | Description |
 | --- | --- | --- |
+| `angularCodeQuality.packageManager` | `auto` | Package manager used to run tools/scripts (`auto`, `npm`, `yarn`, `pnpm`, `bun`). `auto` detects it from the workspace-root lockfile. **Yarn 1 (classic)** users should set this to `npm`, since `yarn exec` requires Yarn 2+. |
 | `angularCodeQuality.tsPrune.tsconfigPath` | `tsconfig.app.json` | tsconfig (relative to the workspace root) that ts-prune should use. Falls back to running without a project file if missing. |
 | `angularCodeQuality.stylelint.globs` | `["src/**/*.scss", "src/**/*.css"]` | Globs stylelint lints when no `lint:styles`/`stylelint` npm script is defined. |
 | `angularCodeQuality.eslint.useJsonFormat` | `true` | Request JSON from the lint script (`npm run lint -- --format json`) for reliable parsing. Disable if your lint script does not support `--format`. |
 | `angularCodeQuality.stylelint.useJsonFormat` | `true` | Request JSON from stylelint (`--formatter json`). Disable if your setup does not support it. |
+| `angularCodeQuality.depcheck.ignoreAngularImplicit` | `true` | Hide depcheck "unused" results for packages Angular uses implicitly (`@angular/*`, `zone.js`, `rxjs`, `tslib`, `typescript`, karma/jasmine, and `angular.json` builders). |
+| `angularCodeQuality.depcheck.ignores` | `[]` | Extra package-name patterns to hide from depcheck "unused" results (`*` wildcard, e.g. `@my-scope/*`). |
 | `angularCodeQuality.revealOutputOnRun` | `true` | Reveal the output channel automatically each time a command runs. |
 
 ---
