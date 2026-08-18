@@ -16,12 +16,13 @@ const CWD = path.resolve('/project');
 
 test('resolveFilePath resolves relative paths against the project root', () => {
   assert.equal(resolveFilePath(CWD, 'src/app/foo.ts'), path.resolve(CWD, 'src/app/foo.ts'));
+  // Windows-style separators must resolve on every host (Linux CI included).
   assert.equal(resolveFilePath(CWD, 'src\\app\\foo.ts'), path.resolve(CWD, 'src/app/foo.ts'));
+  assert.equal(resolveFilePath(CWD, '\\src\\app\\foo.ts'), path.resolve(CWD, 'src/app/foo.ts'));
 
   if (path.sep === '\\') {
-    // On Windows, bare-separator paths from CLIs are relative to the project root.
+    // On Windows a leading `/` is not a POSIX root; treat it as project-relative.
     assert.equal(resolveFilePath(CWD, '/src/app/foo.ts'), path.resolve(CWD, 'src/app/foo.ts'));
-    assert.equal(resolveFilePath(CWD, '\\src\\app\\foo.ts'), path.resolve(CWD, 'src/app/foo.ts'));
     assert.equal(resolveFilePath(CWD, 'C:\\abs\\foo.ts'), path.normalize('C:\\abs\\foo.ts'));
   } else {
     // On POSIX a leading slash is a genuine absolute path and is kept as-is.

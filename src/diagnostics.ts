@@ -30,20 +30,26 @@ export interface ParsedIssue {
  */
 export function resolveFilePath(projectRoot: string, filePart: string): string {
   const original = filePart.trim();
-  const trimmed = original.replace(/\//g, path.sep);
 
   // A path is only "truly absolute" when it carries a Windows drive letter, is a
   // UNC path, or is a POSIX root path on a POSIX host. A bare leading separator
   // (e.g. "\src\app\..." emitted by some CLIs on Windows) is treated as relative
   // to the project root so we always land on the real file.
+  // Detect these on the original string — converting `\` to `/` on POSIX would
+  // otherwise make a UNC path look like a POSIX absolute path.
   const hasDriveLetter = /^[A-Za-z]:[\\/]/.test(original);
-  const isUnc = /^\\\\/.test(trimmed);
+  const isUnc = /^\\\\/.test(original);
   const isPosixRoot = path.sep === '/' && original.startsWith('/');
+
+  // Normalize both separators to the host so Windows-style CLI output
+  // (`src\app\foo.ts`) still resolves on POSIX CI and vice versa.
+  const normalized = original.replace(/[/\\]/g, path.sep);
+
   if (hasDriveLetter || isUnc || isPosixRoot) {
-    return path.normalize(trimmed);
+    return path.normalize(normalized);
   }
 
-  const relativeToRoot = trimmed.replace(/^[/\\]+/, '');
+  const relativeToRoot = normalized.replace(/^[/\\]+/, '');
   return path.resolve(projectRoot, relativeToRoot);
 }
 
