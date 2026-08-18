@@ -7,6 +7,9 @@ import {
   parseTsPruneOutput,
   parseEslintOutput,
   parseStylelintOutput,
+  matchesGlob,
+  partitionUnusedDependencies,
+  ANGULAR_IMPLICIT_PATTERNS,
 } from '../diagnostics';
 
 const CWD = path.resolve('/project');
@@ -55,6 +58,41 @@ test('parseDepcheckOutput reports unused and missing dependencies', () => {
   assert.ok(missing.message.includes('rxjs'));
   assert.equal(missing.severity, 'warning');
   assert.equal(missing.file, path.resolve(CWD, 'src/app/app.component.ts'));
+});
+
+test('matchesGlob handles exact names and wildcards', () => {
+  assert.equal(matchesGlob('zone.js', 'zone.js'), true);
+  assert.equal(matchesGlob('@angular/core', '@angular/*'), true);
+  assert.equal(matchesGlob('@angular/common/http', '@angular/*'), true);
+  assert.equal(matchesGlob('@angular', '@angular/*'), false);
+  assert.equal(matchesGlob('karma-chrome-launcher', 'karma-*'), true);
+  assert.equal(matchesGlob('lodash', '@angular/*'), false);
+});
+
+test('partitionUnusedDependencies splits reported vs ignored', () => {
+  const { reported, ignored } = partitionUnusedDependencies(
+    ['lodash', '@angular/core', 'zone.js', 'moment'],
+    [...ANGULAR_IMPLICIT_PATTERNS]
+  );
+  assert.deepEqual(reported.sort(), ['lodash', 'moment']);
+  assert.deepEqual(ignored.sort(), ['@angular/core', 'zone.js']);
+});
+
+test('parseDepcheckOutput applies ignore patterns to unused deps but not missing', () => {
+  const raw = JSON.stringify({
+    dependencies: ['@angular/animations', 'lodash'],
+    devDependencies: ['zone.js'],
+    missing: { '@angular/router': ['src/app/app.module.ts'] },
+  });
+  const issues = parseDepcheckOutput(raw, CWD, path.join(CWD, 'package.json'), undefined, [
+    '@angular/*',
+    'zone.js',
+  ]);
+  const unused = issues.filter((i) => i.message.startsWith('Unused dependency'));
+  assert.equal(unused.length, 1);
+  assert.ok(unused[0].message.includes('lodash'));
+  // Missing deps are never filtered.
+  assert.ok(issues.some((i) => i.message.includes('Missing dependency: @angular/router')));
 });
 
 test('parseDepcheckOutput ignores noise around the JSON', () => {

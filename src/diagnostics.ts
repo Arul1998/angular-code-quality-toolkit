@@ -72,6 +72,56 @@ function extractJson(raw: string): string | undefined {
   return raw.slice(start, end + 1);
 }
 
+/**
+ * Package-name patterns that Angular projects use implicitly, so depcheck's
+ * "unused" report for them is almost always a false positive. `*` is a wildcard.
+ */
+export const ANGULAR_IMPLICIT_PATTERNS: readonly string[] = [
+  '@angular/*',
+  '@angular-devkit/*',
+  '@angular-eslint/*',
+  '@angular-builders/*',
+  '@nx/*',
+  '@nrwl/*',
+  'zone.js',
+  'rxjs',
+  'tslib',
+  'typescript',
+  'ng-packagr',
+  'karma',
+  'karma-*',
+  'jasmine-core',
+  '@types/jasmine',
+  'jest-preset-angular',
+];
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Match a package name against a glob-ish pattern where `*` matches any run of characters. */
+export function matchesGlob(name: string, pattern: string): boolean {
+  const re = new RegExp(`^${pattern.split('*').map(escapeRegExp).join('.*')}$`);
+  return re.test(name);
+}
+
+/** Split depcheck's unused list into what to report vs. what to ignore. */
+export function partitionUnusedDependencies(
+  unused: string[],
+  ignorePatterns: string[]
+): { reported: string[]; ignored: string[] } {
+  const reported: string[] = [];
+  const ignored: string[] = [];
+  for (const dep of unused) {
+    if (ignorePatterns.some((p) => matchesGlob(dep, p))) {
+      ignored.push(dep);
+    } else {
+      reported.push(dep);
+    }
+  }
+  return { reported, ignored };
+}
+
 /** Find line number (0-based) in package.json where a dependency name appears. */
 export function getPackageJsonLineForDependency(content: string, depName: string): number {
   const lines = content.split(/\r?\n/);
@@ -88,7 +138,8 @@ export function parseDepcheckOutput(
   rawOutput: string,
   cwd: string,
   packageJsonPath: string,
-  packageJsonContent?: string
+  packageJsonContent?: string,
+  ignorePatterns: string[] = []
 ): ParsedIssue[] {
   const issues: ParsedIssue[] = [];
   const json = extractJson(rawOutput);
@@ -107,7 +158,8 @@ export function parseDepcheckOutput(
     return issues;
   }
 
-  const unused = [...(data.dependencies ?? []), ...(data.devDependencies ?? [])];
+  const allUnused = [...(data.dependencies ?? []), ...(data.devDependencies ?? [])];
+  const { reported: unused } = partitionUnusedDependencies(allUnused, ignorePatterns);
   for (const dep of unused) {
     const line = packageJsonContent
       ? getPackageJsonLineForDependency(packageJsonContent, dep)
