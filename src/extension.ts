@@ -8,7 +8,21 @@ import {
   parseTsPruneOutput,
   parseEslintOutput,
   parseStylelintOutput,
+  ANGULAR_IMPLICIT_PATTERNS,
 } from './diagnostics';
+import {
+  PackageManager,
+  detectPackageManager,
+  binRunner,
+  scriptCommand,
+  addDevCommand,
+} from './packageManager';
+import {
+  AngularProject,
+  parseAngularJson,
+  defaultProject,
+  styleGlobsForProject,
+} from './angularWorkspace';
 
 const DIAGNOSTIC_SOURCE = 'Angular Code Quality';
 
@@ -18,12 +32,32 @@ type ToolKey = 'depcheck' | 'ts-prune' | 'eslint' | 'stylelint';
 const collections = new Map<ToolKey, vscode.DiagnosticCollection>();
 let outputChannel: vscode.OutputChannel | undefined;
 
+/** Remembered Angular project selection per workspace folder (by fsPath -> project name). */
+const activeProjectByFolder = new Map<string, string>();
+let projectStatusBar: vscode.StatusBarItem | undefined;
+
+/** True if the setting has an explicit user value (workspace/global), not just its default. */
+function isConfigExplicitlySet(section: string): boolean {
+  const info = vscode.workspace.getConfiguration('angularCodeQuality').inspect(section);
+  return Boolean(
+    info &&
+      (info.globalValue !== undefined ||
+        info.workspaceValue !== undefined ||
+        info.workspaceFolderValue !== undefined)
+  );
+}
+
+type PackageManagerSetting = 'auto' | PackageManager;
+
 interface ToolkitConfig {
   tsconfigPath: string;
   stylelintGlobs: string[];
   eslintUseJson: boolean;
   stylelintUseJson: boolean;
   revealOutput: boolean;
+  packageManager: PackageManagerSetting;
+  depcheckIgnoreAngularImplicit: boolean;
+  depcheckIgnores: string[];
 }
 
 function getConfig(): ToolkitConfig {
@@ -34,7 +68,101 @@ function getConfig(): ToolkitConfig {
     eslintUseJson: c.get<boolean>('eslint.useJsonFormat', true),
     stylelintUseJson: c.get<boolean>('stylelint.useJsonFormat', true),
     revealOutput: c.get<boolean>('revealOutputOnRun', true),
+    packageManager: c.get<PackageManagerSetting>('packageManager', 'auto'),
+    depcheckIgnoreAngularImplicit: c.get<boolean>('depcheck.ignoreAngularImplicit', true),
+    depcheckIgnores: c.get<string[]>('depcheck.ignores', []),
   };
+}
+
+/** Resolve the package manager: honor the explicit setting, else detect from lockfiles. */
+async function resolvePackageManager(cwd: string): Promise<PackageManager> {
+  const { packageManager } = getConfig();
+  if (packageManager !== 'auto') {
+    return packageManager;
+  }
+  const has = async (name: string): Promise<boolean> =>
+    pathExists(vscode.Uri.file(path.join(cwd, name)));
+  return detectPackageManager({
+    npm: (await has('package-lock.json')) || (await has('npm-shrinkwrap.json')),
+    yarn: await has('yarn.lock'),
+    pnpm: await has('pnpm-lock.yaml'),
+    bun: (await has('bun.lockb')) || (await has('bun.lock')),
+  });
+}
+
+async function readAngularWorkspace(cwd: string) {
+  const content = await readFileText(vscode.Uri.file(path.join(cwd, 'angular.json')));
+  return content ? parseAngularJson(content) : null;
+}
+
+function updateProjectStatusBar(project?: AngularProject): void {
+  if (!projectStatusBar) {
+    return;
+  }
+  if (project) {
+    projectStatusBar.text = `$(symbol-namespace) NG: ${project.name}`;
+    projectStatusBar.tooltip = 'Angular Code Quality: active project (click to change)';
+    projectStatusBar.show();
+  } else {
+    projectStatusBar.hide();
+  }
+}
+
+/**
+ * Resolve the active Angular project for a workspace. Returns undefined when
+ * there is no `angular.json`. Does not prompt unless `forcePick` is set — normal
+ * runs reuse the remembered selection, or default to the primary application.
+ */
+async function getActiveProject(cwd: string, forcePick = false): Promise<AngularProject | undefined> {
+  const workspace = await readAngularWorkspace(cwd);
+  if (!workspace) {
+    updateProjectStatusBar(undefined);
+    return undefined;
+  }
+
+  if (forcePick) {
+    const items = workspace.projects.map((p) => ({
+      label: p.name,
+      description: `${p.projectType ?? 'project'}${p.root ? ` · ${p.root}` : ''}`,
+      project: p,
+    }));
+    const picked = await vscode.window.showQuickPick(items, {
+      placeHolder: 'Select the Angular project for code-quality checks',
+    });
+    if (picked) {
+      activeProjectByFolder.set(cwd, picked.project.name);
+      updateProjectStatusBar(picked.project);
+      return picked.project;
+    }
+    // Canceled: fall through and keep the current selection.
+  }
+
+  const remembered = activeProjectByFolder.get(cwd);
+  const found = remembered ? workspace.projects.find((p) => p.name === remembered) : undefined;
+  const chosen = found ?? defaultProject(workspace);
+  if (chosen) {
+    activeProjectByFolder.set(cwd, chosen.name);
+    updateProjectStatusBar(chosen);
+  }
+  return chosen;
+}
+
+async function selectAngularProject(): Promise<void> {
+  const folder = getWorkspaceFolder();
+  if (!folder) {
+    return;
+  }
+  const project = await getActiveProject(folder.uri.fsPath, true);
+  if (!project) {
+    vscode.window.showInformationMessage(
+      'Angular Code Quality: No angular.json projects were found in this workspace.'
+    );
+  } else {
+    vscode.window.setStatusBarMessage(
+      `Angular Code Quality: active project → ${project.name}`,
+      3000
+    );
+  }
 }
 
 function getWorkspaceFolder(): vscode.WorkspaceFolder | undefined {
@@ -235,6 +363,8 @@ interface RunOptions {
    */
   quiet?: boolean;
   token?: vscode.CancellationToken;
+  /** Package manager used to build the command (logged for transparency). */
+  packageManager?: PackageManager;
 }
 
 /** Shared execution + reporting pipeline for a single tool run. Returns issue count (-1 if aborted). */
@@ -242,7 +372,8 @@ async function runTool(options: RunOptions): Promise<number> {
   const { revealOutput } = getConfig();
   const output = getOutputChannel(revealOutput);
   output.appendLine(`\n> ${options.command}`);
-  output.appendLine(`Running in ${options.cwd} ...`);
+  const pmNote = options.packageManager ? ` (package manager: ${options.packageManager})` : '';
+  output.appendLine(`Running in ${options.cwd}${pmNote} ...`);
 
   const result =
     options.quiet && options.token
@@ -304,17 +435,29 @@ async function runDepcheck(batch: BatchOptions = {}): Promise<number> {
     return -1;
   }
   const cwd = folder.uri.fsPath;
+  const pm = await resolvePackageManager(cwd);
   const packageJsonPath = path.join(cwd, 'package.json');
   const packageJsonContent = await readFileText(vscode.Uri.file(packageJsonPath));
 
+  // Build the "known-implicit, don't report as unused" list: curated Angular
+  // packages + builders discovered in angular.json + user-configured patterns.
+  const { depcheckIgnoreAngularImplicit, depcheckIgnores } = getConfig();
+  const workspace = await readAngularWorkspace(cwd);
+  const ignorePatterns = [
+    ...(depcheckIgnoreAngularImplicit ? ANGULAR_IMPLICIT_PATTERNS : []),
+    ...(workspace?.builders ?? []),
+    ...depcheckIgnores,
+  ];
+
   return runTool({
     label: 'depcheck',
-    command: 'npx --yes depcheck --json',
+    command: `${binRunner(pm)} depcheck --json`,
     cwd,
     toolKey: 'depcheck',
     noun: 'dependency issue',
-    installHint: 'Install it with: npm install --save-dev depcheck',
-    parse: (raw) => parseDepcheckOutput(raw, cwd, packageJsonPath, packageJsonContent),
+    packageManager: pm,
+    installHint: `Install it with: ${addDevCommand(pm, 'depcheck')}`,
+    parse: (raw) => parseDepcheckOutput(raw, cwd, packageJsonPath, packageJsonContent, ignorePatterns),
     ...batch,
   });
 }
@@ -325,7 +468,16 @@ async function runTsPrune(batch: BatchOptions = {}): Promise<number> {
     return -1;
   }
   const cwd = folder.uri.fsPath;
-  const { tsconfigPath } = getConfig();
+  const pm = await resolvePackageManager(cwd);
+  const project = await getActiveProject(cwd);
+
+  // Prefer an explicit user setting; otherwise use the active project's tsConfig
+  // from angular.json (crucial in monorepos where it isn't at the root).
+  let tsconfigPath = getConfig().tsconfigPath;
+  if (!isConfigExplicitlySet('tsPrune.tsconfigPath') && project?.tsConfig) {
+    tsconfigPath = project.tsConfig;
+  }
+
   const tsconfigUri = vscode.Uri.file(path.join(cwd, tsconfigPath));
   const exists = await pathExists(tsconfigUri);
 
@@ -339,8 +491,8 @@ async function runTsPrune(batch: BatchOptions = {}): Promise<number> {
   }
 
   const command = exists
-    ? `npx --yes ts-prune -p ${shellArg(tsconfigPath)}`
-    : 'npx --yes ts-prune';
+    ? `${binRunner(pm)} ts-prune -p ${shellArg(tsconfigPath)}`
+    : `${binRunner(pm)} ts-prune`;
 
   return runTool({
     label: 'ts-prune',
@@ -348,7 +500,8 @@ async function runTsPrune(batch: BatchOptions = {}): Promise<number> {
     cwd,
     toolKey: 'ts-prune',
     noun: 'unused export',
-    installHint: 'Install it with: npm install --save-dev ts-prune',
+    packageManager: pm,
+    installHint: `Install it with: ${addDevCommand(pm, 'ts-prune')}`,
     parse: (raw) => parseTsPruneOutput(raw, cwd),
     ...batch,
   });
@@ -360,8 +513,45 @@ async function runEslint(batch: BatchOptions = {}): Promise<number> {
     return -1;
   }
   const cwd = folder.uri.fsPath;
+  const pm = await resolvePackageManager(cwd);
   const { eslintUseJson, revealOutput } = getConfig();
   const output = getOutputChannel(revealOutput);
+
+  const tslintOnRaw = (raw: string): void => {
+    if (raw.includes('tslint') || raw.includes('Cannot find builder')) {
+      vscode.window
+        .showErrorMessage(
+          'Angular Code Quality: This project still uses TSLint (removed in Angular 12+). Migrate to ESLint?',
+          'Add ESLint to Angular project'
+        )
+        .then((choice) => {
+          if (choice) {
+            void addEslintToAngular();
+          }
+        });
+    }
+  };
+
+  // In a multi-project workspace, lint the *selected* project via the Angular CLI
+  // so the picker actually scopes ESLint. The root "lint" script lints everything.
+  const workspace = await readAngularWorkspace(cwd);
+  const project = await getActiveProject(cwd);
+  if (workspace && workspace.projects.length > 1 && project?.hasLintTarget) {
+    const json = eslintUseJson ? ' --format json' : '';
+    output.appendLine(`\nLinting Angular project "${project.name}" (ng lint ${project.name}).`);
+    return runTool({
+      label: 'ESLint',
+      command: `${binRunner(pm)} ng lint ${project.name}${json}`,
+      cwd,
+      toolKey: 'eslint',
+      noun: 'lint issue',
+      packageManager: pm,
+      installHint: 'Ensure @angular/cli and ESLint are installed in this workspace.',
+      parse: (raw) => parseEslintOutput(raw, cwd),
+      ...batch,
+      onRaw: tslintOnRaw,
+    });
+  }
 
   const contents = await readFileText(vscode.Uri.file(path.join(cwd, 'package.json')));
   if (!contents) {
@@ -388,12 +578,12 @@ async function runEslint(batch: BatchOptions = {}): Promise<number> {
     output.appendLine(`\n${message}`);
     const choice = await vscode.window.showWarningMessage(message, 'Add ESLint to Angular project');
     if (choice) {
-      addEslintToAngular();
+      void addEslintToAngular();
     }
     return -1;
   }
 
-  const command = eslintUseJson ? 'npm run lint -- --format json' : 'npm run lint';
+  const command = scriptCommand(pm, 'lint', eslintUseJson ? '--format json' : undefined);
 
   return runTool({
     label: 'ESLint',
@@ -401,23 +591,11 @@ async function runEslint(batch: BatchOptions = {}): Promise<number> {
     cwd,
     toolKey: 'eslint',
     noun: 'lint issue',
+    packageManager: pm,
     installHint: 'Ensure ESLint is installed and your "lint" script works (try running it in a terminal).',
     parse: (raw) => parseEslintOutput(raw, cwd),
     ...batch,
-    onRaw: (raw) => {
-      if (raw.includes('tslint') || raw.includes('Cannot find builder')) {
-        vscode.window
-          .showErrorMessage(
-            'Angular Code Quality: This project still uses TSLint (removed in Angular 12+). Migrate to ESLint?',
-            'Add ESLint to Angular project'
-          )
-          .then((choice) => {
-            if (choice) {
-              addEslintToAngular();
-            }
-          });
-      }
-    },
+    onRaw: tslintOnRaw,
   });
 }
 
@@ -427,31 +605,46 @@ async function runStylelint(batch: BatchOptions = {}): Promise<number> {
     return -1;
   }
   const cwd = folder.uri.fsPath;
-  const { stylelintGlobs, stylelintUseJson } = getConfig();
+  const pm = await resolvePackageManager(cwd);
+  const project = await getActiveProject(cwd);
+  const { stylelintUseJson } = getConfig();
+
+  // Prefer an explicit user setting; otherwise scope globs to the active
+  // project's source root (e.g. apps/web/src) instead of always src/.
+  let stylelintGlobs = getConfig().stylelintGlobs;
+  if (!isConfigExplicitlySet('stylelint.globs') && project) {
+    stylelintGlobs = styleGlobsForProject(project);
+  }
 
   const contents = await readFileText(vscode.Uri.file(path.join(cwd, 'package.json')));
-  let scriptCommand: string | undefined;
+  let styleScript: string | undefined;
   if (contents) {
     try {
       const pkg = JSON.parse(contents) as { scripts?: Record<string, string> };
       if (pkg.scripts?.['lint:styles']) {
-        scriptCommand = 'npm run lint:styles';
+        styleScript = 'lint:styles';
       } else if (pkg.scripts?.stylelint) {
-        scriptCommand = 'npm run stylelint';
+        styleScript = 'stylelint';
       }
     } catch {
-      // Ignore parse errors; fall back to npx.
+      // Ignore parse errors; fall back to running stylelint directly.
     }
   }
 
   let command: string;
-  if (scriptCommand) {
-    command = stylelintUseJson ? `${scriptCommand} -- --formatter json` : scriptCommand;
+  if (styleScript) {
+    command = scriptCommand(pm, styleScript, stylelintUseJson ? '--formatter json' : undefined);
+    if (project && !isConfigExplicitlySet('stylelint.globs')) {
+      getOutputChannel(getConfig().revealOutput).appendLine(
+        `\n[Angular Code Quality] Using your "${styleScript}" script — its file patterns win over the ` +
+          `selected project (${project.name}). Remove that script to scope stylelint to the project.`
+      );
+    }
   } else {
     const globs = stylelintGlobs.map(shellArg).join(' ');
     command = stylelintUseJson
-      ? `npx --yes stylelint ${globs} --allow-empty-input --formatter json`
-      : `npx --yes stylelint ${globs} --allow-empty-input`;
+      ? `${binRunner(pm)} stylelint ${globs} --allow-empty-input --formatter json`
+      : `${binRunner(pm)} stylelint ${globs} --allow-empty-input`;
   }
 
   return runTool({
@@ -460,24 +653,27 @@ async function runStylelint(batch: BatchOptions = {}): Promise<number> {
     cwd,
     toolKey: 'stylelint',
     noun: 'style issue',
-    installHint: 'Install it with: npm install --save-dev stylelint stylelint-config-standard-scss',
+    packageManager: pm,
+    installHint: `Install it with: ${addDevCommand(pm, 'stylelint stylelint-config-standard-scss')}`,
     parse: (raw) => parseStylelintOutput(raw, cwd),
     ...batch,
   });
 }
 
-function addEslintToAngular(): void {
+async function addEslintToAngular(): Promise<void> {
   const folder = getWorkspaceFolder();
   if (!folder) {
     return;
   }
+  const pm = await resolvePackageManager(folder.uri.fsPath);
+  const command = `${binRunner(pm)} ng add @angular-eslint/schematics`;
   // `ng add` is interactive (it prompts). Run it in a real terminal so the user can answer.
   const terminal = vscode.window.createTerminal({
     name: 'Angular Code Quality: Add ESLint',
     cwd: folder.uri.fsPath,
   });
   terminal.show();
-  terminal.sendText('npx ng add @angular-eslint/schematics');
+  terminal.sendText(command);
   vscode.window.showInformationMessage(
     'Angular Code Quality: Running "ng add @angular-eslint/schematics" in the terminal. Answer the prompts, then run "Run ESLint".'
   );
@@ -540,6 +736,10 @@ export function activate(context: vscode.ExtensionContext): void {
     context.subscriptions.push(collection);
   }
 
+  projectStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 90);
+  projectStatusBar.command = 'angularCodeQualityToolkit.selectProject';
+  context.subscriptions.push(projectStatusBar);
+
   context.subscriptions.push(
     vscode.commands.registerCommand('angularCodeQualityToolkit.runDepcheck', () => runDepcheck()),
     vscode.commands.registerCommand('angularCodeQualityToolkit.runTsPrune', () => runTsPrune()),
@@ -551,14 +751,26 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('angularCodeQualityToolkit.runAllChecks', () => runAllChecks()),
     vscode.commands.registerCommand('angularCodeQualityToolkit.clearDiagnostics', () =>
       clearAllDiagnostics()
+    ),
+    vscode.commands.registerCommand('angularCodeQualityToolkit.selectProject', () =>
+      selectAngularProject()
     )
   );
+
+  // Show the active Angular project in the status bar on startup, if any.
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  if (folder) {
+    void getActiveProject(folder.uri.fsPath);
+  }
 }
 
 export function deactivate(): void {
   outputChannel?.dispose();
+  projectStatusBar?.dispose();
+  projectStatusBar = undefined;
   for (const collection of collections.values()) {
     collection.dispose();
   }
   collections.clear();
+  activeProjectByFolder.clear();
 }
