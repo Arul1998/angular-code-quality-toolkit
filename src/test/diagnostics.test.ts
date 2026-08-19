@@ -9,7 +9,12 @@ import {
   parseStylelintOutput,
   matchesGlob,
   partitionUnusedDependencies,
+  buildDiagnosticShape,
+  appendRule,
+  DIAGNOSTIC_SOURCES,
+  SEVERITY_RANK,
   ANGULAR_IMPLICIT_PATTERNS,
+  ParsedIssue,
 } from '../diagnostics';
 
 const CWD = path.resolve('/project');
@@ -53,7 +58,8 @@ test('parseDepcheckOutput reports unused and missing dependencies', () => {
   assert.equal(unused.length, 2);
   const lodash = unused.find((i) => i.message.includes('lodash'))!;
   assert.equal(lodash.line, 2); // 0-based line of "lodash" in the package.json above
-  assert.equal(lodash.severity, 'info');
+  assert.equal(lodash.severity, 'warning');
+  assert.equal(lodash.file, path.join(CWD, 'package.json'));
 
   const missing = issues.find((i) => i.message.startsWith('Missing dependency'))!;
   assert.ok(missing.message.includes('rxjs'));
@@ -112,6 +118,7 @@ test('parseTsPruneOutput parses file:line - symbol and skips "used in module"', 
   assert.equal(issues.length, 1);
   assert.equal(issues[0].line, 9); // 0-based
   assert.ok(issues[0].message.includes('helperFn'));
+  assert.equal(issues[0].severity, 'warning');
 });
 
 test('parseTsPruneOutput ignores TypeScript compiler errors', () => {
@@ -172,6 +179,30 @@ test('parseStylelintOutput prefers JSON format', () => {
   assert.ok(issues[0].message.includes('block-no-empty'));
 });
 
+test('appendRule adds the rule once, never doubling it', () => {
+  // ESLint: message has no rule suffix → append normally.
+  assert.equal(appendRule('x is unused', 'no-unused-vars'), 'x is unused (no-unused-vars)');
+  // Modern stylelint: text already ends with the rule → do not double it.
+  assert.equal(appendRule('Empty block (block-no-empty)', 'block-no-empty'), 'Empty block (block-no-empty)');
+  // No rule id → message unchanged.
+  assert.equal(appendRule('some message', null), 'some message');
+  assert.equal(appendRule('some message', undefined), 'some message');
+});
+
+test('parseStylelintOutput does not double the rule when text already includes it', () => {
+  const raw = JSON.stringify([
+    {
+      source: '/project/src/styles.scss',
+      warnings: [
+        { line: 5, column: 9, severity: 'error', text: 'Empty block (block-no-empty)', rule: 'block-no-empty' },
+      ],
+    },
+  ]);
+  const issues = parseStylelintOutput(raw, CWD);
+  assert.equal(issues.length, 1);
+  assert.equal(issues[0].message, 'Empty block (block-no-empty)');
+});
+
 test('parseStylelintOutput falls back to compact text', () => {
   const raw = '/project/src/styles.scss:12:3: error Unexpected empty block (block-no-empty)';
   const issues = parseStylelintOutput(raw, CWD);
@@ -179,4 +210,82 @@ test('parseStylelintOutput falls back to compact text', () => {
   assert.equal(issues[0].line, 11);
   assert.equal(issues[0].column, 2);
   assert.equal(issues[0].severity, 'error');
+});
+
+test('DIAGNOSTIC_SOURCES gives each tool its own Problems-panel source', () => {
+  assert.equal(DIAGNOSTIC_SOURCES.eslint, 'angular-quality-eslint');
+  assert.equal(DIAGNOSTIC_SOURCES.stylelint, 'angular-quality-stylelint');
+  assert.equal(DIAGNOSTIC_SOURCES['ts-prune'], 'angular-quality-ts-prune');
+  assert.equal(DIAGNOSTIC_SOURCES.depcheck, 'angular-quality-depcheck');
+});
+
+test('SEVERITY_RANK mirrors vscode.DiagnosticSeverity numbering', () => {
+  // Error=0, Warning=1, Information=2, Hint=3 (stable vscode API values).
+  assert.equal(SEVERITY_RANK.error, 0);
+  assert.equal(SEVERITY_RANK.warning, 1);
+  assert.equal(SEVERITY_RANK.info, 2);
+  assert.equal(SEVERITY_RANK.hint, 3);
+});
+
+test('buildDiagnosticShape assigns the tool source and correct severity/range', () => {
+  const issue: ParsedIssue = {
+    file: path.join(CWD, 'src/app/app.component.ts'),
+    line: 23,
+    column: 9,
+    endColumn: 15,
+    message: "'result' is assigned a value but never used.",
+    severity: 'error',
+  };
+  const shape = buildDiagnosticShape(issue, 'eslint');
+  assert.equal(shape.source, 'angular-quality-eslint');
+  assert.equal(shape.severityRank, SEVERITY_RANK.error);
+  assert.equal(shape.startLine, 23);
+  assert.equal(shape.endLine, 23);
+  assert.equal(shape.startColumn, 9);
+  assert.equal(shape.endColumn, 15);
+  assert.equal(shape.file, issue.file);
+  assert.equal(shape.message, issue.message);
+});
+
+test('buildDiagnosticShape defaults end column to a non-empty range', () => {
+  const issue: ParsedIssue = {
+    file: path.join(CWD, 'package.json'),
+    line: 4,
+    column: 2,
+    message: 'Unused dependency: lodash',
+    severity: 'warning',
+  };
+  const shape = buildDiagnosticShape(issue, 'depcheck');
+  assert.equal(shape.source, 'angular-quality-depcheck');
+  assert.equal(shape.severityRank, SEVERITY_RANK.warning);
+  // No endColumn given → range is at least one column wide.
+  assert.equal(shape.endColumn, shape.startColumn + 1);
+});
+
+test('buildDiagnosticShape clamps malformed negative/inverted positions', () => {
+  const issue: ParsedIssue = {
+    file: path.join(CWD, 'src/broken.ts'),
+    line: -5,
+    column: -3,
+    endColumn: -10, // inverted/negative end column from garbage output
+    message: 'garbage',
+    severity: 'hint',
+  };
+  const shape = buildDiagnosticShape(issue, 'ts-prune');
+  assert.equal(shape.startLine, 0);
+  assert.equal(shape.startColumn, 0);
+  assert.equal(shape.endColumn, 1); // never negative, never inverted
+  assert.equal(shape.severityRank, SEVERITY_RANK.hint);
+});
+
+test('buildDiagnosticShape falls back to Warning for an unknown severity', () => {
+  const issue = {
+    file: path.join(CWD, 'src/x.ts'),
+    line: 0,
+    column: 0,
+    message: 'x',
+    severity: 'bogus',
+  } as unknown as ParsedIssue;
+  const shape = buildDiagnosticShape(issue, 'stylelint');
+  assert.equal(shape.severityRank, SEVERITY_RANK.warning);
 });

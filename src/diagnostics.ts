@@ -7,7 +7,23 @@ import * as path from 'path';
  * `vscode.Diagnostic`s.
  */
 
-export type IssueSeverity = 'error' | 'warning' | 'info';
+export type IssueSeverity = 'error' | 'warning' | 'info' | 'hint';
+
+/** The tools this extension runs. Each owns its own diagnostic collection. */
+export type ToolKey = 'depcheck' | 'ts-prune' | 'eslint' | 'stylelint';
+
+/**
+ * Human-readable diagnostic `source` shown next to each entry in the Problems
+ * panel. Distinct per tool so the user can tell — and filter — which tool
+ * produced each finding, and so this extension's diagnostics never get confused
+ * with those from the ESLint/Angular Language Service extensions.
+ */
+export const DIAGNOSTIC_SOURCES: Record<ToolKey, string> = {
+  eslint: 'angular-quality-eslint',
+  stylelint: 'angular-quality-stylelint',
+  'ts-prune': 'angular-quality-ts-prune',
+  depcheck: 'angular-quality-depcheck',
+};
 
 export interface ParsedIssue {
   /** Absolute filesystem path of the file the issue belongs to. */
@@ -20,6 +36,53 @@ export interface ParsedIssue {
   endColumn?: number;
   message: string;
   severity: IssueSeverity;
+}
+
+/**
+ * Numeric severity ranks that mirror `vscode.DiagnosticSeverity`
+ * (Error=0, Warning=1, Information=2, Hint=3). Kept here — free of the vscode
+ * import — so the diagnostic-creation logic can be unit-tested with plain Node;
+ * extension.ts casts these directly onto the real enum.
+ */
+export const SEVERITY_RANK: Record<IssueSeverity, number> = {
+  error: 0,
+  warning: 1,
+  info: 2,
+  hint: 3,
+};
+
+/** vscode-free description of the diagnostic a `ParsedIssue` becomes. */
+export interface DiagnosticShape {
+  file: string;
+  startLine: number;
+  startColumn: number;
+  endLine: number;
+  endColumn: number;
+  message: string;
+  severityRank: number;
+  source: string;
+}
+
+/**
+ * Pure computation of the diagnostic an issue maps to, independent of the vscode
+ * API. extension.ts wraps the result into real `vscode.Diagnostic`/`Range`/`Uri`
+ * objects. Positions are clamped so malformed parser output can never produce a
+ * negative or inverted range (which vscode would reject).
+ */
+export function buildDiagnosticShape(issue: ParsedIssue, toolKey: ToolKey): DiagnosticShape {
+  const startLine = Math.max(0, issue.line);
+  const startColumn = Math.max(0, issue.column);
+  const endColumn = Math.max(issue.endColumn ?? startColumn + 1, startColumn + 1);
+  return {
+    file: issue.file,
+    startLine,
+    startColumn,
+    endLine: startLine,
+    endColumn,
+    message: issue.message,
+    severityRank: SEVERITY_RANK[issue.severity] ?? SEVERITY_RANK.warning,
+    source: DIAGNOSTIC_SOURCES[toolKey],
+  };
 }
 
 /**
@@ -105,6 +168,20 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/**
+ * Append ` (ruleId)` to a message unless the tool already included it. Modern
+ * stylelint suffixes its `text` with the rule (e.g. "Empty block (block-no-empty)"),
+ * so blindly appending would double it; ESLint's `message` never includes the
+ * rule, so it appends normally.
+ */
+export function appendRule(text: string, rule?: string | null): string {
+  const trimmed = text.trim();
+  if (!rule) {
+    return trimmed;
+  }
+  return trimmed.endsWith(`(${rule})`) ? trimmed : `${trimmed} (${rule})`;
+}
+
 /** Match a package name against a glob-ish pattern where `*` matches any run of characters. */
 export function matchesGlob(name: string, pattern: string): boolean {
   const re = new RegExp(`^${pattern.split('*').map(escapeRegExp).join('.*')}$`);
@@ -176,7 +253,7 @@ export function parseDepcheckOutput(
       column: 0,
       endColumn: 200,
       message: `Unused dependency: ${dep}`,
-      severity: 'info',
+      severity: 'warning',
     });
   }
 
@@ -229,7 +306,7 @@ export function parseTsPruneOutput(rawOutput: string, cwd: string): ParsedIssue[
         column: 0,
         endColumn: 100,
         message: `Unused export: ${symbol!.trim()}`,
-        severity: 'info',
+        severity: 'warning',
       });
       continue;
     }
@@ -243,7 +320,7 @@ export function parseTsPruneOutput(rawOutput: string, cwd: string): ParsedIssue[
         column: 0,
         endColumn: 100,
         message: `Unused export: ${symbol!.trim()}`,
-        severity: 'info',
+        severity: 'warning',
       });
     }
   }
@@ -292,13 +369,12 @@ export function parseEslintJson(rawOutput: string, cwd: string): ParsedIssue[] |
       const line = Math.max(0, (m.line ?? 1) - 1);
       const column = Math.max(0, (m.column ?? 1) - 1);
       const endColumn = m.endColumn ? Math.max(column + 1, m.endColumn - 1) : undefined;
-      const rule = m.ruleId ? ` (${m.ruleId})` : '';
       issues.push({
         file,
         line,
         column,
         endColumn,
-        message: `${(m.message ?? '').trim()}${rule}`,
+        message: appendRule((m.message ?? '').trim(), m.ruleId),
         severity: m.severity === 2 ? 'error' : 'warning',
       });
     }
@@ -414,13 +490,12 @@ export function parseStylelintJson(rawOutput: string, cwd: string): ParsedIssue[
       const line = Math.max(0, (w.line ?? 1) - 1);
       const column = Math.max(0, (w.column ?? 1) - 1);
       const endColumn = w.endColumn ? Math.max(column + 1, w.endColumn - 1) : undefined;
-      const rule = w.rule ? ` (${w.rule})` : '';
       issues.push({
         file,
         line,
         column,
         endColumn,
-        message: `${(w.text ?? '').trim()}${rule}`,
+        message: appendRule((w.text ?? '').trim(), w.rule),
         severity: w.severity === 'error' ? 'error' : 'warning',
       });
     }

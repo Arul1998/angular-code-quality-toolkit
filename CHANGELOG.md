@@ -4,6 +4,14 @@ All notable changes to the Angular Code Quality Toolkit extension are documented
 
 ## [0.2.0] - Unreleased
 
+### Changed
+
+- **Problems-panel-first UX.** Actionable findings surface primarily in **View → Problems** (and as editor squiggles), not as raw logs. Each finding now carries a **per-tool diagnostic source** so you can tell — and filter — which tool produced it: `angular-quality-eslint`, `angular-quality-stylelint`, `angular-quality-ts-prune`, `angular-quality-depcheck`.
+  - Unused exports (ts-prune) and unused dependencies (depcheck) are now reported as **Warnings** (previously Information) so they show under the default Problems filters; ESLint/stylelint keep their reported severity.
+  - Single-tool runs show a concise toast — `Code quality scan completed: N problems found (<tool>).` — instead of restating findings.
+  - **Run all checks** now clears stale diagnostics up front (so a tool that fails to launch no longer leaves last run's problems behind) and finishes with a per-tool breakdown and a grand total.
+  - The output channel is retained for command lines, raw tool output, failures, and install/config hints. Malformed tool output and unrepresentable file locations are handled without crashing the extension.
+
 ### Added
 
 - **Angular-aware depcheck.** "Unused dependency" results now hide packages Angular uses implicitly — `@angular/*`, `@angular-devkit/*`, `zone.js`, `rxjs`, `tslib`, `typescript`, karma/jasmine, and any builder referenced in `angular.json` — so depcheck stops flagging framework packages as unused.

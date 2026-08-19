@@ -1,321 +1,119 @@
-## Angular Code Quality Toolkit
+# Angular Code Quality Toolkit
 
-**Angular Code Quality Toolkit** is a VS Code extension that runs popular Angular ecosystem code-quality tools directly from the editor and surfaces the results in a dedicated output channel.
+Run your Angular code-quality tools — **depcheck, ts-prune, ESLint, stylelint** — from inside VS Code, and see the results in the **Problems** panel like normal errors and warnings.
 
-It is designed to help you quickly **spot unused dependencies, dead TypeScript code, and lint issues** without leaving VS Code.
-
----
-
-## Features
-
-- **Run depcheck**
-  - Command: `Angular Code Quality: Run depcheck`
-  - Uses `npx depcheck` in the current workspace folder.
-  - Shows output in the `Angular Code Quality` output channel.
-  - Helps identify **unused dependencies** and **missing dependencies** in your Angular workspace.
-  - **Angular-aware:** packages Angular uses implicitly (`@angular/*`, `zone.js`, `rxjs`, `tslib`, `typescript`, karma/jasmine, and builders from `angular.json`) are filtered out of "unused" results, so you see real cleanup candidates instead of framework noise.
-
-- **Run ts-prune**
-  - Command: `Angular Code Quality: Run ts-prune`
-  - Tries to use `tsconfig.app.json` from the workspace root:
-    - If `tsconfig.app.json` exists, runs: `npx ts-prune -p tsconfig.app.json`
-    - If it does **not** exist, falls back to: `npx ts-prune`
-  - Warns you in VS Code if `tsconfig.app.json` is missing, so you know the analysis may be less precise.
-  - Helps find **unused TypeScript exports** and dead code in your Angular project.
-
-- **Run ESLint (workspace lint script)**
-  - Command: `Angular Code Quality: Run ESLint`
-  - Runs `npm run lint` in the current workspace folder.
-  - Before running, it:
-    - Reads `package.json` from the workspace root.
-    - Verifies that a `"lint"` script exists.
-    - Shows friendly warnings if `package.json` is missing or invalid, or if no `"lint"` script is defined.
-  - Use ESLint rules like `@typescript-eslint/no-unused-vars` to find **unused methods, variables, and parameters** in your code.
-
-- **Add ESLint to Angular project**
-  - Command: `Angular Code Quality: Add ESLint to Angular project`
-  - Runs `ng add @angular-eslint/schematics` in the workspace to **migrate from TSLint to ESLint** (or add ESLint if you don’t have it).
-  - Use this when `ng lint` fails with “Cannot find builder: tslint”. After it finishes, use **Run ESLint** to lint your code.
-
-- **Run stylelint (styles)**
-  - Command: `Angular Code Quality: Run stylelint`
-  - Runs stylelint on your CSS/SCSS (uses `npm run lint:styles` or `npm run stylelint` if defined in `package.json`, otherwise `npx stylelint "src/**/*.scss" "src/**/*.css"`).
-  - Helps find **style-rule violations and deprecated/invalid CSS** in Angular component styles. Results appear in the Problems view and in the editor. (Detecting genuinely *unused* CSS selectors requires extra stylelint plugins and is unreliable under Angular's emulated view encapsulation — this command does not claim to do it.)
-
-- **Run all checks**
-  - Command: `Angular Code Quality: Run all checks`
-  - Runs depcheck, ts-prune, ESLint, and stylelint one after another and reports a combined summary.
-
-- **Clear results**
-  - Command: `Angular Code Quality: Clear results`
-  - Removes all diagnostics contributed by the extension from the Problems view and editor.
-
-- **Cancellable, non-blocking runs**
-  - Each command runs with a progress notification you can **cancel** at any time.
-  - Uses `spawn` (not `exec`), so large projects with lots of output no longer fail silently on the old 1 MB buffer limit.
-
-- **Angular project–aware (monorepo friendly)**
-  - Reads `angular.json` and targets a selected project, instead of assuming everything is at the workspace root.
-  - Command **`Angular Code Quality: Select Angular project`** and a status-bar item (click to switch project).
-  - ts-prune uses the active project's build `tsConfig`; stylelint scopes its globs to the project's source root — both overridable via settings.
-  - Understands multi-project workspaces (apps + libraries) and Nx-style `targets`.
-
-- **Works with your package manager**
-  - Detects npm, yarn, pnpm, or bun from the workspace lockfile and runs tools/scripts accordingly (`npx --yes`, `pnpm exec`, `yarn exec`, `bunx`), preferring the project-local tool over a random fetched copy.
-  - Override detection with the `angularCodeQuality.packageManager` setting.
-
-- **Reliable, per-tool results**
-  - ESLint and stylelint are run with JSON output (`--format json` / `--formatter json`) for accurate file/line/column/severity, with automatic fallback to text parsing.
-  - Each tool writes to **its own diagnostics group**, so running one tool never erases another tool's results.
-  - ts-prune exports marked `(used in module)` are skipped to avoid false positives.
-
-- **Unified output channel**
-  - All tools write into the same `Angular Code Quality` output channel.
-  - Clear process start / end messages and non-zero exit code warnings.
-  - If a CLI process cannot be started (e.g. tool not installed or not on PATH), you get both an output message **and** a VS Code error notification.
-
-- **In-editor results (Problems view and squiggles)**
-  - After each command runs, the extension parses the tool output and shows **diagnostics** in VS Code:
-    - **Problems** panel (`View → Problems`) lists every issue with **file, line, and message**. Click an entry to jump to that line.
-    - **Editor squiggles**: open a file and you’ll see the reported line (and column for ESLint) highlighted with the message.
-  - **depcheck**: unused dependencies are marked in `package.json`; missing dependencies are marked in the file that uses them.
-  - **ts-prune**: each unused export is shown at the correct file and line (when ts-prune outputs line numbers).
-  - **ESLint**: each lint error/warning appears at the exact file:line:column (supports standard and stylish-style output).
-  - **stylelint**: each style issue appears at file:line:column in the Problems view.
+Click a problem → jump straight to the file and line. No reading raw logs.
 
 ---
 
-## Unused methods, variables, and styles
+## What it does
 
-- **Unused methods and variables**  
-  The extension does not run a separate “unused code” tool. Use **ESLint** with the right rules:
-  - Add **`@typescript-eslint/no-unused-vars`** (and optionally `@typescript-eslint/no-unused-expressions`) in your ESLint config so **Run ESLint** reports unused variables, parameters, and dead code.
-  - After adding ESLint to your Angular project (see **Add ESLint to Angular project**), extend your config with these rules; then **Angular Code Quality: Run ESLint** will show them in the Problems view and in the editor.
+- Finds **unused npm dependencies** (depcheck)
+- Finds **unused TypeScript exports / dead code** (ts-prune)
+- Finds **lint issues** in your `.ts` (ESLint)
+- Finds **style issues** in your `.css` / `.scss` (stylelint)
+- Shows everything in **View → Problems**, grouped by file, each tagged with the tool that found it:
+  `angular-quality-eslint`, `angular-quality-stylelint`, `angular-quality-ts-prune`, `angular-quality-depcheck`
 
-- **Styles (CSS/SCSS)**  
-  Use **Angular Code Quality: Run stylelint** to lint your styles. Install stylelint in the project if needed:
-  - `npm install --save-dev stylelint stylelint-scss`
-  - Add a `stylelint` config (e.g. `.stylelintrc.json`) or a `"lint:styles"` / `"stylelint"` script in `package.json` if you want a custom glob. The extension will run that script when present; otherwise it runs `npx stylelint "src/**/*.scss" "src/**/*.css"`.
-
----
-
-## Prerequisites in Your Angular Workspace
-
-This extension assumes you have an existing Angular workspace with Node tooling (e.g. generated by the Angular CLI).
-
-In your Angular project:
-
-- **Node & npm**
-  - Node.js and npm installed on your system.
-
-- **depcheck**
-  - Either installed globally, or available via `npx depcheck`.
-  - The extension runs `npx depcheck --json` to show results in the editor.
-  - Typical setup (project-local):
-    - `npm install --save-dev depcheck`
-
-- **ts-prune**
-  - Either installed globally, or available via `npx ts-prune`.
-  - When ts-prune outputs `file:line - exportName`, the extension shows each unused export at the correct file and line in the Problems view.
-  - Typical setup (project-local):
-    - `npm install --save-dev ts-prune`
-  - Recommended: ensure your Angular app has a suitable tsconfig (for example `tsconfig.app.json`) in the workspace root. The extension will:
-    - Prefer `tsconfig.app.json` if present.
-    - Warn you if it is missing and then run `npx ts-prune` without a `-p` path.
-
-- **ESLint lint script**
-  - Your Angular workspace should have a `"lint"` script in `package.json`, usually something like:
-    - `"lint": "ng lint"` (Angular CLI)
-    - or `"lint": "eslint \"src/**/*.{ts,tsx}\""` (ESLint directly)
-  - If your project still uses TSLint, run **Angular Code Quality: Add ESLint to Angular project** to migrate.
-  - The extension verifies there is a `"lint"` script before running ESLint.
-
-- **stylelint (optional, for Run stylelint)**
-  - Install in the project: `npm install --save-dev stylelint stylelint-scss`
-  - Optionally add a `"lint:styles"` or `"stylelint"` script in `package.json`; otherwise the extension runs `npx stylelint "src/**/*.scss" "src/**/*.css"`.
-
-> **Note:** The extension does **not** bundle depcheck, ts-prune, ESLint, or stylelint. It runs tools you install in your Angular project and shows their results in the editor.
+The extension does **not** bundle these tools. It runs the copies you already have in your project (via npm, yarn, pnpm, or bun — auto-detected from your lockfile).
 
 ---
 
-## How to Use the Commands
+## Commands
 
-1. **Open your Angular workspace** in VS Code (the folder containing `package.json`).
-2. Ensure the relevant tools are installed and configured in the workspace:
-   - `depcheck`, `ts-prune`, and a `"lint"` npm script using ESLint.
-3. Open the **Command Palette** (`Ctrl+Shift+P` / `Cmd+Shift+P`).
-4. Run one of the provided commands:
-   - `Angular Code Quality: Run depcheck`
-   - `Angular Code Quality: Run ts-prune`
-   - `Angular Code Quality: Run ESLint`
-   - `Angular Code Quality: Add ESLint to Angular project` (to migrate from TSLint or add ESLint)
-   - `Angular Code Quality: Run stylelint` (for CSS/SCSS)
-   - `Angular Code Quality: Run all checks` (runs everything in sequence)
-   - `Angular Code Quality: Clear results` (removes all diagnostics)
-   - `Angular Code Quality: Select Angular project` (choose which `angular.json` project to target)
-5. Check results in two places:
-   - **Output** channel: select **Angular Code Quality** to see the raw CLI output.
-   - **Problems** panel and **editor**: issues appear as diagnostics—click a problem to open the file at that line and fix unused code or dependencies.
+Open the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and type "Angular Code Quality".
 
-If something goes wrong (e.g. tools not installed, `tsconfig.app.json` missing, or `package.json` malformed), the extension:
+| Command | What it does |
+| --- | --- |
+| **Run all checks** | Runs all four tools and shows a combined total. Start here. |
+| **Run depcheck** | Unused / missing dependencies. |
+| **Run ts-prune** | Unused TypeScript exports. |
+| **Run ESLint** | Lint issues (uses your `lint` npm script or `ng lint`). |
+| **Run stylelint** | CSS / SCSS issues. |
+| **Add ESLint to Angular project** | Runs `ng add @angular-eslint/schematics` (use if you're still on TSLint). |
+| **Select Angular project** | In a monorepo, choose which `angular.json` project to check. |
+| **Clear results** | Removes only this extension's problems. Leaves TypeScript/ESLint-extension problems alone. |
 
-- Logs detailed messages in the output channel, and
-- Shows a VS Code warning or error notification so you can fix your configuration.
+---
+
+## Where results show up
+
+**Problems panel** (`View → Problems`) — this is the main place. Every finding appears as an Error, Warning, or Info with the correct file, line, and message. Click to open it.
+
+- depcheck → unused deps point at `package.json`; missing deps point at the file that uses them.
+- ts-prune → each unused export at its file and line.
+- ESLint / stylelint → each issue at its exact `file:line:column`.
+
+**Output panel** (`Angular Code Quality` channel) — kept for logs only: the command that ran, raw tool output, and errors like "tool not installed". You don't need it for the findings themselves.
+
+When a run finishes you get a short notification, e.g. `Code quality scan completed: 14 problems found.`
+
+---
+
+## Setup
+
+You need an Angular workspace (a folder with `package.json`) and the tools you want to use installed in it:
+
+```bash
+npm install --save-dev depcheck ts-prune stylelint stylelint-config-standard-scss
+```
+
+For ESLint, your `package.json` should have a `lint` script (e.g. `"lint": "ng lint"`). If you're still on TSLint, run **Add ESLint to Angular project** first.
+
+To catch unused variables and parameters, add the rule to your ESLint config so **Run ESLint** reports them:
+
+```jsonc
+{
+  "rules": {
+    "@typescript-eslint/no-unused-vars": "error"
+  }
+}
+```
 
 ---
 
 ## Settings
 
-Configure the extension under **Settings → Extensions → Angular Code Quality Toolkit** (or in `settings.json`):
+**Settings → Extensions → Angular Code Quality Toolkit** (or `settings.json`):
 
-| Setting | Default | Description |
+| Setting | Default | What it does |
 | --- | --- | --- |
-| `angularCodeQuality.packageManager` | `auto` | Package manager used to run tools/scripts (`auto`, `npm`, `yarn`, `pnpm`, `bun`). `auto` detects it from the workspace-root lockfile. **Yarn 1 (classic)** users should set this to `npm`, since `yarn exec` requires Yarn 2+. |
-| `angularCodeQuality.tsPrune.tsconfigPath` | `tsconfig.app.json` | tsconfig (relative to the workspace root) that ts-prune should use. Falls back to running without a project file if missing. |
-| `angularCodeQuality.stylelint.globs` | `["src/**/*.scss", "src/**/*.css"]` | Globs stylelint lints when no `lint:styles`/`stylelint` npm script is defined. |
-| `angularCodeQuality.eslint.useJsonFormat` | `true` | Request JSON from the lint script (`npm run lint -- --format json`) for reliable parsing. Disable if your lint script does not support `--format`. |
-| `angularCodeQuality.stylelint.useJsonFormat` | `true` | Request JSON from stylelint (`--formatter json`). Disable if your setup does not support it. |
-| `angularCodeQuality.depcheck.ignoreAngularImplicit` | `true` | Hide depcheck "unused" results for packages Angular uses implicitly (`@angular/*`, `zone.js`, `rxjs`, `tslib`, `typescript`, karma/jasmine, and `angular.json` builders). |
-| `angularCodeQuality.depcheck.ignores` | `[]` | Extra package-name patterns to hide from depcheck "unused" results (`*` wildcard, e.g. `@my-scope/*`). |
-| `angularCodeQuality.revealOutputOnRun` | `true` | Reveal the output channel automatically each time a command runs. |
+| `angularCodeQuality.packageManager` | `auto` | `auto`, `npm`, `yarn`, `pnpm`, or `bun`. `auto` reads your lockfile. Yarn 1 users: set this to `npm`. |
+| `angularCodeQuality.tsPrune.tsconfigPath` | `tsconfig.app.json` | Which tsconfig ts-prune uses. |
+| `angularCodeQuality.stylelint.globs` | `["src/**/*.scss", "src/**/*.css"]` | Files stylelint checks when no style script exists. |
+| `angularCodeQuality.eslint.useJsonFormat` | `true` | Ask ESLint for JSON output (more accurate). Turn off if your lint script rejects `--format`. |
+| `angularCodeQuality.stylelint.useJsonFormat` | `true` | Ask stylelint for JSON output. |
+| `angularCodeQuality.depcheck.ignoreAngularImplicit` | `true` | Hide false "unused" hits for packages Angular uses implicitly (`@angular/*`, `zone.js`, `rxjs`, `tslib`, `typescript`, karma/jasmine, builders). |
+| `angularCodeQuality.depcheck.ignores` | `[]` | Extra packages to hide (`*` wildcard, e.g. `@my-scope/*`). |
+| `angularCodeQuality.revealOutputOnRun` | `true` | Auto-open the Output channel on each run. |
 
 ---
 
-## How This Helps Clean Up Angular Codebases
+## Good to know
 
-Modern Angular applications tend to accumulate:
+- **Monorepo friendly.** Reads `angular.json`, supports apps + libraries and Nx-style `targets`. The active project shows in the status bar — click to switch.
+- **Every run is cancellable** via its progress notification.
+- **Each tool keeps its own results,** so running one tool never wipes another's, and re-running replaces stale results without duplicates.
+- **Pairs well with CI.** Use the extension for fast feedback while editing, then run the same four commands in CI to enforce them on every PR:
 
-- Unused npm dependencies and devDependencies.
-- Dead TypeScript exports that are no longer referenced anywhere.
-- Lint violations and style drift as teams evolve.
+  ```bash
+  npx depcheck
+  npx ts-prune -p tsconfig.app.json
+  npm run lint
+  npx stylelint "src/**/*.{css,scss}"
+  ```
 
-By integrating **depcheck**, **ts-prune**, and **ESLint** into a single VS Code extension:
-
-- **Developers stay in their editor** and do not need to remember exact CLI commands.
-- Teams can **standardize a repeatable code-quality workflow** on top of existing Angular tooling.
-- It becomes much easier to:
-  - Detect and remove unused packages.
-  - Identify and safely delete dead TypeScript code.
-  - Keep the codebase aligned with team-defined lint rules.
-
-This leads to **leaner bundles**, **more maintainable code**, and **cleaner dependency graphs** in Angular projects.
+> Note on unused CSS: reliably detecting *unused* selectors under Angular's view encapsulation isn't practical, so stylelint here checks for rule violations and invalid CSS, not dead selectors.
 
 ---
 
-## Using this extension with CI (recommended)
+## Developing this extension
 
-This extension is designed to **complement**, not replace, CI pipelines. The usual setup is:
-
-- **VS Code extension** → fast feedback while you are editing code.
-- **CI (GitHub Actions, Azure DevOps, etc.)** → enforce the same checks for every PR.
-
-Here is a minimal **GitHub Actions** example that runs the same tools in CI:
-
-```yaml
-name: Angular Code Quality
-
-on:
-  push:
-  pull_request:
-
-jobs:
-  enforce-quality:
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Check dependencies with depcheck
-        run: npx depcheck
-
-      - name: Find unused exports with ts-prune
-        run: npx ts-prune -p tsconfig.app.json
-
-      - name: Run ESLint
-        run: npm run lint
-
-      - name: Run stylelint (if configured)
-        run: |
-          if npm run lint:styles -- --help >/dev/null 2>&1; then
-            npm run lint:styles
-          elif npm run stylelint -- --help >/dev/null 2>&1; then
-            npm run stylelint
-          else
-            echo "No stylelint npm script configured; skipping CSS/SCSS lint."
-          fi
+```bash
+npm install       # install deps
+npm run compile   # build
+npm run lint      # lint this extension's own code
+npm test          # run the parser/diagnostic unit tests
 ```
 
-Use the extension locally for quick, per-file feedback, and let CI enforce the same checks before merges.
-
----
-
-## Motivation / Background
-
-The **Angular Code Quality Toolkit** extension was created to make it easier for Angular teams to apply industry-standard code-quality tooling directly from VS Code.
-
-Instead of building yet another custom linter or proprietary tool, this project:
-
-- Integrates **existing open‑source tools** (depcheck, ts-prune, ESLint) into a cohesive workflow.
-- Adds **developer‑friendly ergonomics** such as:
-  - Single-click commands in the Command Palette.
-  - Automatic detection of common Angular conventions (like `tsconfig.app.json`).
-  - Explicit, helpful error messages when the workspace is misconfigured.
-- Encourages teams to **treat code quality as a first‑class part of their daily development workflow**, rather than an afterthought.
-
-As open‑source tooling, this extension is intended to be:
-
-- A practical, real‑world contribution to the Angular ecosystem.
-- A reusable building block that other teams can adopt and extend.
-
----
-
-## Local Development
-
-In the extension project itself (this repository):
-
-1. Install dependencies:
-   - `npm install`
-2. Compile the extension:
-   - `npm run compile`
-3. Start debugging in VS Code:
-   - Open this folder in VS Code.
-   - Press `F5` to run the **Run Extension** debug configuration.
-   - A new Extension Development Host window will open where you can:
-     - Open an Angular workspace.
-     - Run the commands from the Command Palette.
-4. Run the checks on the extension itself:
-   - `npm run lint` — lints this extension's own TypeScript with ESLint.
-   - `npm test` — runs unit tests for the output parsers.
-
----
-
-## Packaging and Publishing (Visual Studio Marketplace)
-
-To package and publish this extension on the **Visual Studio Marketplace** so others can install it from VS Code:
-
-1. Install `vsce` (if you have not already):
-   - `npm install -g vsce`
-2. Make sure you are signed in with a Visual Studio Marketplace publisher that matches the `"publisher"` field in `package.json` (`arul1998` in this project).
-3. From the extension project root, run:
-   - `npm run compile`
-   - `vsce package`
-   - This produces a `.vsix` file (for example `angular-code-quality-toolkit-0.1.0.vsix`).
-4. To publish a new version to the Marketplace:
-   - Update the `"version"` in `package.json`.
-   - Commit and push your changes.
-   - Run:
-     - `npm run compile`
-     - `vsce publish`
-
-You can also install the `.vsix` locally by running:
-
-- `code --install-extension angular-code-quality-toolkit-0.1.0.vsix`
-
-or using **Extensions → … → Install from VSIX** inside VS Code.
+Press `F5` in VS Code to launch an Extension Development Host, then open an Angular project and try the commands.

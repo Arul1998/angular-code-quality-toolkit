@@ -175,8 +175,8 @@
         },
         "angularCodeQuality.revealOutputOnRun": {
           "type": "boolean",
-          "default": true,
-          "description": "Reveal the Angular Code Quality output channel automatically each time a command runs."
+          "default": false,
+          "description": "Reveal the Angular Code Quality output channel automatically each time a command runs. Findings appear in the Problems panel; enable this only if you want to watch the raw tool logs."
         }
       }
     }

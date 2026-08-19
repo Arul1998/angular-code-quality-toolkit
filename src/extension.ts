@@ -3,7 +3,8 @@ import { spawn } from 'child_process';
 import * as path from 'path';
 import {
   ParsedIssue,
-  IssueSeverity,
+  ToolKey,
+  buildDiagnosticShape,
   parseDepcheckOutput,
   parseTsPruneOutput,
   parseEslintOutput,
@@ -26,9 +27,12 @@ import {
 
 const DIAGNOSTIC_SOURCE = 'Angular Code Quality';
 
-/** One diagnostic collection per tool so results accumulate instead of overwriting each other. */
-type ToolKey = 'depcheck' | 'ts-prune' | 'eslint' | 'stylelint';
-
+/**
+ * One diagnostic collection per tool so results accumulate instead of
+ * overwriting each other, and each tool's results can be cleared/updated
+ * independently. `ToolKey` and the per-tool `source` strings live in the pure
+ * `diagnostics` module so they can be unit-tested without the vscode API.
+ */
 const collections = new Map<ToolKey, vscode.DiagnosticCollection>();
 let outputChannel: vscode.OutputChannel | undefined;
 
@@ -67,7 +71,7 @@ function getConfig(): ToolkitConfig {
     stylelintGlobs: c.get<string[]>('stylelint.globs', ['src/**/*.scss', 'src/**/*.css']),
     eslintUseJson: c.get<boolean>('eslint.useJsonFormat', true),
     stylelintUseJson: c.get<boolean>('stylelint.useJsonFormat', true),
-    revealOutput: c.get<boolean>('revealOutputOnRun', true),
+    revealOutput: c.get<boolean>('revealOutputOnRun', false),
     packageManager: c.get<PackageManagerSetting>('packageManager', 'auto'),
     depcheckIgnoreAngularImplicit: c.get<boolean>('depcheck.ignoreAngularImplicit', true),
     depcheckIgnores: c.get<string[]>('depcheck.ignores', []),
@@ -291,35 +295,62 @@ function isToolMissing(result: ToolResult): boolean {
   );
 }
 
-function toDiagnostic(issue: ParsedIssue): { uri: vscode.Uri; diagnostic: vscode.Diagnostic } {
-  const severityMap: Record<IssueSeverity, vscode.DiagnosticSeverity> = {
-    error: vscode.DiagnosticSeverity.Error,
-    warning: vscode.DiagnosticSeverity.Warning,
-    info: vscode.DiagnosticSeverity.Information,
-  };
-  const endColumn = issue.endColumn ?? issue.column + 1;
+/**
+ * Turn a parsed issue into a `vscode.Diagnostic` plus the file URI it belongs
+ * to. The range/severity/source are computed by the pure `buildDiagnosticShape`
+ * so the mapping is unit-tested; here we only adapt it to vscode types. The
+ * `severityRank` values match `vscode.DiagnosticSeverity` exactly.
+ */
+function toDiagnostic(
+  issue: ParsedIssue,
+  toolKey: ToolKey
+): { uri: vscode.Uri; diagnostic: vscode.Diagnostic } {
+  const shape = buildDiagnosticShape(issue, toolKey);
   const diagnostic = new vscode.Diagnostic(
-    new vscode.Range(issue.line, issue.column, issue.line, Math.max(endColumn, issue.column + 1)),
-    issue.message,
-    severityMap[issue.severity]
+    new vscode.Range(shape.startLine, shape.startColumn, shape.endLine, shape.endColumn),
+    shape.message,
+    shape.severityRank as vscode.DiagnosticSeverity
   );
-  diagnostic.source = DIAGNOSTIC_SOURCE;
-  return { uri: vscode.Uri.file(issue.file), diagnostic };
+  diagnostic.source = shape.source;
+  return { uri: vscode.Uri.file(shape.file), diagnostic };
 }
 
-function applyDiagnostics(collection: vscode.DiagnosticCollection, issues: ParsedIssue[]): void {
-  collection.clear();
+/**
+ * Replace a tool's diagnostics wholesale. `collection.set(entries)` clears any
+ * previous contents and applies the new ones atomically, so stale results for
+ * that tool cannot linger and duplicates cannot accumulate across runs.
+ */
+function applyDiagnostics(
+  collection: vscode.DiagnosticCollection,
+  toolKey: ToolKey,
+  issues: ParsedIssue[]
+): void {
   const byUri = new Map<string, vscode.Diagnostic[]>();
   for (const issue of issues) {
-    const { uri, diagnostic } = toDiagnostic(issue);
+    let uri: vscode.Uri;
+    let diagnostic: vscode.Diagnostic;
+    try {
+      ({ uri, diagnostic } = toDiagnostic(issue, toolKey));
+    } catch {
+      // A single unrepresentable issue (e.g. an unusable file path) must not
+      // sink the whole batch.
+      continue;
+    }
     const key = uri.toString();
     const list = byUri.get(key) ?? [];
     list.push(diagnostic);
     byUri.set(key, list);
   }
+  const entries: [vscode.Uri, vscode.Diagnostic[]][] = [];
   for (const [uriStr, diagnostics] of byUri) {
-    collection.set(vscode.Uri.parse(uriStr), diagnostics);
+    entries.push([vscode.Uri.parse(uriStr), diagnostics]);
   }
+  collection.set(entries);
+}
+
+/** "1 problem" / "3 problems" / "0 problems". */
+function pluralizeProblems(count: number): string {
+  return `${count} problem${count === 1 ? '' : 's'}`;
 }
 
 function reportSummary(
@@ -331,10 +362,14 @@ function reportSummary(
 ): void {
   const plural = count === 1 ? '' : 's';
   if (count > 0) {
-    output.appendLine(`\n[Angular Code Quality] ${label}: ${count} ${noun}${plural}. See the Problems view.`);
+    output.appendLine(
+      `\n[Angular Code Quality] ${label}: ${count} ${noun}${plural}. See the Problems view (View → Problems).`
+    );
     if (!quiet) {
+      // Concise completion notification; the detailed findings live in the
+      // Problems panel and the editor, not in this toast.
       vscode.window.showInformationMessage(
-        `Angular Code Quality — ${label}: ${count} ${noun}${plural}. Check the Problems view and editor.`
+        `Code quality scan completed: ${pluralizeProblems(count)} found (${label}).`
       );
     }
   } else {
@@ -406,7 +441,7 @@ async function runTool(options: RunOptions): Promise<number> {
 
   const issues = options.parse(raw, result);
   const collection = collections.get(options.toolKey)!;
-  applyDiagnostics(collection, issues);
+  applyDiagnostics(collection, options.toolKey, issues);
 
   // A non-zero exit with nothing parseable almost always means the command
   // itself errored (e.g. `ng lint` rejecting `--format json`, a bad config, or a
@@ -684,6 +719,14 @@ async function runAllChecks(): Promise<void> {
     return;
   }
 
+  const output = getOutputChannel(getConfig().revealOutput);
+
+  // Start from a clean slate so results from a previous run — including tools
+  // that fail to launch this time and therefore never re-populate their own
+  // collection — cannot linger in the Problems panel.
+  clearDiagnosticCollections();
+  output.appendLine('\n[Angular Code Quality] Running all checks (cleared previous results)…');
+
   await vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Notification,
@@ -691,40 +734,81 @@ async function runAllChecks(): Promise<void> {
       cancellable: true,
     },
     async (progress, token) => {
-      const results: string[] = [];
       const steps: { label: string; run: (b: BatchOptions) => Promise<number> }[] = [
-        { label: 'depcheck', run: runDepcheck },
-        { label: 'ts-prune', run: runTsPrune },
         { label: 'ESLint', run: runEslint },
-        { label: 'stylelint', run: runStylelint },
+        { label: 'Stylelint', run: runStylelint },
+        { label: 'ts-prune', run: runTsPrune },
+        { label: 'depcheck', run: runDepcheck },
       ];
 
+      const counts = new Map<string, number>();
       for (const step of steps) {
         if (token.isCancellationRequested) {
           break;
         }
         progress.report({ message: step.label });
         const count = await step.run({ quiet: true, token });
-        if (count >= 0) {
-          results.push(`${step.label}: ${count}`);
-        }
+        counts.set(step.label, count);
       }
 
       if (token.isCancellationRequested) {
-        vscode.window.showWarningMessage('Angular Code Quality — checks canceled.');
+        output.appendLine(
+          '\n[Angular Code Quality] Canceled — the Problems panel shows only partial results from this run.'
+        );
+        vscode.window.showWarningMessage('Angular Code Quality — checks canceled (partial results).');
         return;
       }
+
+      // Build a per-tool breakdown plus a grand total. A tool that failed to run
+      // reports -1; surface that as "not run" rather than folding it into 0.
+      let total = 0;
+      const outputLines: string[] = [];
+      const toastParts: string[] = [];
+      for (const step of steps) {
+        const count = counts.get(step.label);
+        if (count === undefined) {
+          continue;
+        }
+        if (count < 0) {
+          outputLines.push(`${step.label}: not run (see output)`);
+          toastParts.push(`${step.label} not run`);
+        } else {
+          total += count;
+          outputLines.push(`${step.label}: ${pluralizeProblems(count)}`);
+          toastParts.push(`${step.label} ${count}`);
+        }
+      }
+
+      // Full breakdown → output channel (multi-line survives there).
+      output.appendLine('\n[Angular Code Quality] Scan completed.');
+      for (const line of outputLines) {
+        output.appendLine(`  ${line}`);
+      }
+      output.appendLine(`  Total: ${pluralizeProblems(total)}`);
+      output.appendLine('See the Problems view (View → Problems) for details.');
+
+      // Concise single-line toast (VS Code collapses newlines in notifications).
       vscode.window.showInformationMessage(
-        `Angular Code Quality — all checks done (${results.join(', ') || 'no results'}).`
+        `Angular Code Quality — scan completed: ${pluralizeProblems(total)} (${toastParts.join(', ')}).`
       );
     }
   );
 }
 
-function clearAllDiagnostics(): void {
+/** Clear every collection this extension owns, without any user-facing message. */
+function clearDiagnosticCollections(): void {
   for (const collection of collections.values()) {
     collection.clear();
   }
+}
+
+/**
+ * Clear only the diagnostics this extension created. Because each collection is
+ * owned by this extension, `.clear()` never touches diagnostics contributed by
+ * TypeScript, the Angular Language Service, the ESLint extension, or anything else.
+ */
+function clearAllDiagnostics(): void {
+  clearDiagnosticCollections();
   vscode.window.setStatusBarMessage('Angular Code Quality: cleared all results.', 3000);
 }
 
