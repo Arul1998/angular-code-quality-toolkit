@@ -2,7 +2,7 @@
 
 All notable changes to the Angular Code Quality Toolkit extension are documented in this file.
 
-## [0.2.0] - Unreleased
+## [0.2.0] - 2026-08-21
 
 ### Changed
 
