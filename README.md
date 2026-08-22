@@ -85,7 +85,7 @@ To catch unused variables and parameters, add the rule to your ESLint config so 
 | `angularCodeQuality.stylelint.useJsonFormat` | `true` | Ask stylelint for JSON output. |
 | `angularCodeQuality.depcheck.ignoreAngularImplicit` | `true` | Hide false "unused" hits for packages Angular uses implicitly (`@angular/*`, `zone.js`, `rxjs`, `tslib`, `typescript`, karma/jasmine, builders). |
 | `angularCodeQuality.depcheck.ignores` | `[]` | Extra packages to hide (`*` wildcard, e.g. `@my-scope/*`). |
-| `angularCodeQuality.revealOutputOnRun` | `true` | Auto-open the Output channel on each run. |
+| `angularCodeQuality.revealOutputOnRun` | `false` | Auto-open the Output channel on each run. Off by default — findings go to the Problems panel; enable this only to watch raw tool logs. |
 
 ---
 

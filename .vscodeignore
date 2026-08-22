@@ -1,13 +1,15 @@
-out/test/**
+out/**
 src/**
 .vscode/**
+.vscode-test/**
 **/*.map
 **/*.ts
 node_modules/**
+esbuild.js
+.vscode-test.mjs
 eslint.config.mjs
 tsconfig.json
 package-lock.json
 .gitignore
 .github/**
 assets/angular-code-quality-icon.png
-!.vscode-test/**

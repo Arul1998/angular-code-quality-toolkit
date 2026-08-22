@@ -5,9 +5,17 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
       - uses: actions/checkout@v4
@@ -20,14 +28,45 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Compile
+      - name: Type-check and bundle
         run: npm run compile
 
       - name: Lint
         run: npm run lint
 
-      - name: Test
+      - name: Test (unit)
         run: npm test
 
-      - name: Package (smoke check)
+      - name: Test (integration, Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run test:integration
+
+      - name: Test (integration, Windows/macOS)
+        if: runner.os != 'Linux'
+        run: npm run test:integration
+
+  package:
+    name: Package (smoke check)
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Package VSIX
         run: npx --yes @vscode/vsce package --out angular-code-quality-toolkit.vsix
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: angular-code-quality-toolkit-vsix
+          path: angular-code-quality-toolkit.vsix
+          if-no-files-found: error
