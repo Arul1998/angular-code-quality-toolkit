@@ -2,6 +2,14 @@
 
 All notable changes to the Angular Code Quality Toolkit extension are documented in this file.
 
+## [0.3.1] - 2026-08-23
+
+Same packaged extension as 0.3.0. Bumped because Open VSX treats versions as immutable — 0.3.0 was published, then deleted, and that identity cannot be reused.
+
+### Added
+
+- README: install from [Open VSX](https://open-vsx.org/extension/arul1998/angular-code-quality-toolkit) (Cursor, Windsurf, VSCodium, Gitpod) as well as the VS Code Marketplace.
+
 ## [0.3.0] - 2026-08-23
 
 This release is about reliability and packaging — the extension's behavior is unchanged, but it ships smaller, activates faster, and is now covered by end-to-end tests on every commit.
