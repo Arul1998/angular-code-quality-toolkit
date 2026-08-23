@@ -13,3 +13,4 @@ package-lock.json
 .gitignore
 .github/**
 assets/angular-code-quality-icon.png
+assets/demo.gif

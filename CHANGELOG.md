@@ -2,6 +2,23 @@
 
 All notable changes to the Angular Code Quality Toolkit extension are documented in this file.
 
+## [0.3.0] - 2026-08-23
+
+This release is about reliability and packaging — the extension's behavior is unchanged, but it ships smaller, activates faster, and is now covered by end-to-end tests on every commit.
+
+### Changed
+
+- **Bundled build.** The extension is now bundled with [esbuild](https://esbuild.github.io/) into a single minified `dist/extension.js` instead of shipping the raw compiled output. The packaged VSIX drops to ~20 KB of code (8 files total), which means a smaller download and faster activation.
+
+### Added
+
+- **Integration tests.** A real VS Code Extension Development Host now verifies, on every commit, that the extension activates, that all commands are registered and match `package.json`, and that "Clear results" runs cleanly — catching activation/packaging regressions the unit tests can't see.
+- **Cross-platform CI.** GitHub Actions now type-checks, lints, unit-tests, and integration-tests on **Linux, Windows, and macOS**, then packages the VSIX and uploads it as a build artifact. (Integration tests run on Linux and Windows; macOS runs the unit suite, which exercises the same POSIX code path.)
+
+### Fixed
+
+- Documentation: corrected the default for `angularCodeQuality.revealOutputOnRun` in the README (it is `false`, matching the Problems-panel-first design).
+
 ## [0.2.0] - 2026-08-21
 
 ### Changed

@@ -4,6 +4,10 @@ Run your Angular code-quality tools — **depcheck, ts-prune, ESLint, stylelint*
 
 Click a problem → jump straight to the file and line. No reading raw logs.
 
+![Demo: running all checks and jumping from a Problems-panel finding to the exact line](https://raw.githubusercontent.com/Arul1998/angular-code-quality-toolkit/main/assets/demo.gif)
+
+<sub>Demo (representative). Runs depcheck, ts-prune, ESLint and stylelint, then surfaces every finding in the Problems panel.</sub>
+
 ---
 
 ## What it does
