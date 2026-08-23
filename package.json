@@ -177,6 +177,11 @@
           "type": "boolean",
           "default": false,
           "description": "Reveal the Angular Code Quality output channel automatically each time a command runs. Findings appear in the Problems panel; enable this only if you want to watch the raw tool logs."
+        },
+        "angularCodeQuality.runOnSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically re-run the relevant checks when you save a file, updating the Problems panel in the background (no notifications). Saving a .ts file re-runs ESLint and ts-prune; a .css/.scss file re-runs stylelint; package.json re-runs depcheck. Runs are debounced so rapid saves trigger a single run."
         }
       }
     }

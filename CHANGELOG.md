@@ -2,6 +2,12 @@
 
 All notable changes to the Angular Code Quality Toolkit extension are documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **Run on save.** New setting `angularCodeQuality.runOnSave` (default off): when enabled, saving a file re-runs the relevant tool and refreshes the Problems panel in the background — saving a `.ts` file re-runs ESLint and ts-prune, a `.css`/`.scss` file re-runs stylelint, and `package.json` re-runs depcheck. Runs are quiet (no notifications) and debounced, so a "Save All" triggers a single run instead of one per file.
+
 ## [0.3.1] - 2026-08-23
 
 Same packaged extension as 0.3.0. Bumped because Open VSX treats versions as immutable — 0.3.0 was published, then deleted, and that identity cannot be reused.

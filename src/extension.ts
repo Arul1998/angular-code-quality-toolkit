@@ -24,6 +24,7 @@ import {
   defaultProject,
   styleGlobsForProject,
 } from './angularWorkspace';
+import { toolsForSavedFile } from './runOnSave';
 
 const DIAGNOSTIC_SOURCE = 'Angular Code Quality';
 
@@ -812,6 +813,75 @@ function clearAllDiagnostics(): void {
   vscode.window.setStatusBarMessage('Angular Code Quality: cleared all results.', 3000);
 }
 
+// --- Run on save ------------------------------------------------------------
+
+/** Coalesce rapid saves (e.g. Save All, formatters re-saving) into one run. */
+const RUN_ON_SAVE_DEBOUNCE_MS = 800;
+let runOnSaveTimer: ReturnType<typeof setTimeout> | undefined;
+const pendingRunOnSaveTools = new Set<ToolKey>();
+
+/** Invoke a single tool's run quietly (no toast/progress) for background refreshes. */
+async function runToolByKey(tool: ToolKey): Promise<void> {
+  const quiet = { quiet: true };
+  switch (tool) {
+    case 'depcheck':
+      await runDepcheck(quiet);
+      break;
+    case 'ts-prune':
+      await runTsPrune(quiet);
+      break;
+    case 'eslint':
+      await runEslint(quiet);
+      break;
+    case 'stylelint':
+      await runStylelint(quiet);
+      break;
+  }
+}
+
+async function flushRunOnSave(): Promise<void> {
+  runOnSaveTimer = undefined;
+  const tools = [...pendingRunOnSaveTools];
+  pendingRunOnSaveTools.clear();
+  // Run sequentially so several tools don't contend for the same package manager.
+  for (const tool of tools) {
+    await runToolByKey(tool);
+  }
+}
+
+/** Queue the given tools and (re)start the debounce window. */
+function scheduleRunOnSave(tools: ToolKey[]): void {
+  for (const tool of tools) {
+    pendingRunOnSaveTools.add(tool);
+  }
+  if (runOnSaveTimer) {
+    clearTimeout(runOnSaveTimer);
+  }
+  runOnSaveTimer = setTimeout(() => void flushRunOnSave(), RUN_ON_SAVE_DEBOUNCE_MS);
+}
+
+function handleDidSave(document: vscode.TextDocument): void {
+  if (!vscode.workspace.getConfiguration('angularCodeQuality').get<boolean>('runOnSave', false)) {
+    return;
+  }
+  if (document.uri.scheme !== 'file') {
+    return;
+  }
+  const folder = getWorkspaceFolder();
+  if (!folder) {
+    return;
+  }
+  // Only react to files inside the workspace folder.
+  const rel = path.relative(folder.uri.fsPath, document.uri.fsPath);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    return;
+  }
+  const tools = toolsForSavedFile(document.uri.fsPath);
+  if (tools.length > 0) {
+    scheduleRunOnSave(tools);
+  }
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   const toolKeys: ToolKey[] = ['depcheck', 'ts-prune', 'eslint', 'stylelint'];
   for (const key of toolKeys) {
@@ -838,7 +908,9 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
     vscode.commands.registerCommand('angularCodeQualityToolkit.selectProject', () =>
       selectAngularProject()
-    )
+    ),
+    // Run-on-save: re-run the relevant tool(s) when a file is saved (opt-in).
+    vscode.workspace.onDidSaveTextDocument(handleDidSave)
   );
 
   // Show the active Angular project in the status bar on startup, if any.
@@ -849,6 +921,11 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
+  if (runOnSaveTimer) {
+    clearTimeout(runOnSaveTimer);
+    runOnSaveTimer = undefined;
+  }
+  pendingRunOnSaveTools.clear();
   outputChannel?.dispose();
   projectStatusBar?.dispose();
   projectStatusBar = undefined;

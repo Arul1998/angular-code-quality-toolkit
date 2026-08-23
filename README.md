@@ -92,6 +92,21 @@ To catch unused variables and parameters, add the rule to your ESLint config so 
 | `angularCodeQuality.depcheck.ignoreAngularImplicit` | `true` | Hide false "unused" hits for packages Angular uses implicitly (`@angular/*`, `zone.js`, `rxjs`, `tslib`, `typescript`, karma/jasmine, builders). |
 | `angularCodeQuality.depcheck.ignores` | `[]` | Extra packages to hide (`*` wildcard, e.g. `@my-scope/*`). |
 | `angularCodeQuality.revealOutputOnRun` | `false` | Auto-open the Output channel on each run. Off by default — findings go to the Problems panel; enable this only to watch raw tool logs. |
+| `angularCodeQuality.runOnSave` | `false` | Re-run the relevant checks automatically when you save a file (see below). |
+
+---
+
+## Run on save
+
+Set `angularCodeQuality.runOnSave` to `true` and the extension re-runs the relevant tool whenever you save — the Problems panel stays current without you triggering **Run all checks** by hand:
+
+| You save… | It re-runs |
+| --- | --- |
+| a `.ts` file | ESLint + ts-prune |
+| a `.css` / `.scss` file | stylelint |
+| `package.json` | depcheck |
+
+Runs happen **quietly** in the background (no notifications) and are **debounced**, so a "Save All" or a formatter re-saving triggers a single run rather than one per file. Off by default.
 
 ---
 
