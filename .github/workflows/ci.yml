@@ -37,12 +37,17 @@ jobs:
       - name: Test (unit)
         run: npm test
 
+      # Integration tests launch a real VS Code host. We run them on Linux (via
+      # xvfb) and Windows. macOS is skipped: the arm64 macos-latest runners fail
+      # to launch the downloaded VS Code app bundle ("spawn ... Electron ENOENT"),
+      # a known @vscode/test-electron issue. macOS shares Linux's POSIX code path,
+      # so unit tests above still cover it.
       - name: Test (integration, Linux)
         if: runner.os == 'Linux'
         run: xvfb-run -a npm run test:integration
 
-      - name: Test (integration, Windows/macOS)
-        if: runner.os != 'Linux'
+      - name: Test (integration, Windows)
+        if: runner.os == 'Windows'
         run: npm run test:integration
 
   package:
