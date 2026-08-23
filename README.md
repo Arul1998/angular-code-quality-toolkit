@@ -8,6 +8,8 @@ Click a problem → jump straight to the file and line. No reading raw logs.
 
 <sub>Demo (representative). Runs depcheck, ts-prune, ESLint and stylelint, then surfaces every finding in the Problems panel.</sub>
 
+**Works in** VS Code, and other VS Code–based editors — **Cursor, Windsurf, VSCodium, Gitpod** — via [Open VSX](https://open-vsx.org/extension/arul1998/angular-code-quality-toolkit). Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=arul1998.angular-code-quality-toolkit), or search **"Angular Code Quality Toolkit"** in your editor's Extensions view.
+
 ---
 
 ## What it does

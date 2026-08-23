@@ -1,0 +1,67 @@
+name: Release
+
+# Publishes the extension when you push a version tag, e.g.:
+#   git tag v0.4.0 && git push origin v0.4.0
+# It builds the VSIX, publishes to the VS Code Marketplace and Open VSX
+# (which is what Cursor / Windsurf / VSCodium / Gitpod install from), and
+# attaches the VSIX to a GitHub Release.
+#
+# Each publish step runs only if the matching token secret is set, so the
+# workflow won't fail if you've only configured one registry yet:
+#   - VSCE_PAT  -> VS Code Marketplace  (https://marketplace.visualstudio.com/manage)
+#   - OVSX_PAT  -> Open VSX             (https://open-vsx.org)
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      VSCE_PAT: ${{ secrets.VSCE_PAT }}
+      OVSX_PAT: ${{ secrets.OVSX_PAT }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npm run check-types
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test (unit)
+        run: npm test
+
+      - name: Build VSIX
+        run: npm run vsix
+
+      - name: Publish to VS Code Marketplace
+        if: ${{ env.VSCE_PAT != '' }}
+        run: npx vsce publish --packagePath angular-code-quality-toolkit.vsix
+
+      - name: Publish to Open VSX
+        if: ${{ env.OVSX_PAT != '' }}
+        run: npx ovsx publish angular-code-quality-toolkit.vsix
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "${{ github.ref_name }}"
+          angular-code-quality-toolkit.vsix
+          --title "${{ github.ref_name }}"
+          --notes "See [CHANGELOG.md](https://github.com/Arul1998/angular-code-quality-toolkit/blob/main/CHANGELOG.md) for what changed."

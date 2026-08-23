@@ -192,7 +192,10 @@
     "pretest": "npm run compile-tests",
     "test": "cd out && node --test",
     "pretest:integration": "npm run compile && npm run compile-tests",
-    "test:integration": "vscode-test"
+    "test:integration": "vscode-test",
+    "vsix": "vsce package -o angular-code-quality-toolkit.vsix",
+    "publish:vsce": "vsce publish",
+    "publish:ovsx": "ovsx publish angular-code-quality-toolkit.vsix"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
@@ -200,9 +203,11 @@
     "@types/vscode": "^1.84.0",
     "@vscode/test-cli": "^0.0.10",
     "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.9.2",
     "esbuild": "^0.24.2",
     "eslint": "^9.0.0",
     "mocha": "^10.8.2",
+    "ovsx": "^1.1.1",
     "typescript": "^5.3.0",
     "typescript-eslint": "^8.0.0"
   }
