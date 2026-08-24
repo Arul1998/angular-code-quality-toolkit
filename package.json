@@ -2,7 +2,7 @@
   "name": "angular-code-quality-toolkit",
   "displayName": "Angular Code Quality Toolkit",
   "description": "VS Code extension to run Angular code-quality tools (depcheck, ts-prune, ESLint, stylelint), add ESLint to Angular projects, and help clean unused code, dependencies, and styles.",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "publisher": "arul1998",
   "icon": "assets/icon.png",
   "repository": {
@@ -32,6 +32,12 @@
     "url": "https://github.com/Arul1998/angular-code-quality-toolkit/issues"
   },
   "main": "./dist/extension.js",
+  "capabilities": {
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "This extension runs command-line tools (depcheck, ts-prune, ESLint, stylelint) in your workspace, which requires a real filesystem. It is unavailable in virtual workspaces such as VS Code for the Web (vscode.dev / github.dev)."
+    }
+  },
   "contributes": {
     "commands": [
       {

@@ -1,0 +1,30 @@
+name: Feature request
+description: Suggest an improvement or a new check.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: What are you trying to do that's awkward or impossible today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like the extension to do? A command, a setting, a new behavior?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any workarounds you use today, or other approaches you thought about.
+    validations:
+      required: false
+  - type: markdown
+    attributes:
+      value: >
+        Note: the extension runs the tools already in your project (depcheck, ts-prune, ESLint,
+        stylelint) rather than bundling its own. Requests that fit that model are easiest to land.

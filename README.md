@@ -138,3 +138,5 @@ npm test          # run the parser/diagnostic unit tests
 ```
 
 Press `F5` in VS Code to launch an Extension Development Host, then open an Angular project and try the commands.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full setup, testing, and pull-request guide. Bug reports and feature ideas are welcome in [Issues](https://github.com/Arul1998/angular-code-quality-toolkit/issues/new/choose).

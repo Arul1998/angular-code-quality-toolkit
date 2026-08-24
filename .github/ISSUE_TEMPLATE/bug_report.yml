@@ -1,0 +1,77 @@
+name: Bug report
+description: Something isn't working — a tool doesn't run, wrong results, or an error.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for reporting! Please fill in the details below so it can be reproduced.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+      placeholder: |
+        1. Ran "Angular Code Quality: Run all checks"
+        2. Expected findings in the Problems panel
+        3. Instead, nothing appeared / an error showed
+    validations:
+      required: true
+  - type: textarea
+    id: output-channel
+    attributes:
+      label: Output channel logs
+      description: >
+        Open **View → Output**, choose **"Angular Code Quality"** in the dropdown, and paste
+        the relevant lines here (the command that ran and any error). This is the single most
+        helpful thing for diagnosing tool-run problems.
+      render: shell
+    validations:
+      required: false
+  - type: input
+    id: extension-version
+    attributes:
+      label: Extension version
+      placeholder: "e.g. 0.4.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: editor
+    attributes:
+      label: Editor
+      options:
+        - VS Code
+        - Cursor
+        - Windsurf
+        - VSCodium
+        - Gitpod
+        - Other (note it below)
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: "e.g. Windows 11, macOS 14, Ubuntu 24.04"
+    validations:
+      required: true
+  - type: dropdown
+    id: package-manager
+    attributes:
+      label: Package manager
+      options:
+        - npm
+        - yarn
+        - pnpm
+        - bun
+        - not sure
+    validations:
+      required: false
+  - type: textarea
+    id: project-shape
+    attributes:
+      label: Project shape (optional)
+      description: >
+        Is it a single app or a monorepo (apps + libs / Nx)? Which of depcheck, ts-prune,
+        ESLint, stylelint are installed in the project? Anything unusual about your setup?
+    validations:
+      required: false
