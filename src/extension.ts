@@ -11,6 +11,7 @@ import {
   parseStylelintOutput,
   ANGULAR_IMPLICIT_PATTERNS,
   DIAGNOSTIC_SOURCES,
+  formatProblemSummary,
 } from './diagnostics';
 import {
   PackageManager,
@@ -46,6 +47,15 @@ let outputChannel: vscode.OutputChannel | undefined;
 /** Remembered Angular project selection per workspace folder (by fsPath -> project name). */
 const activeProjectByFolder = new Map<string, string>();
 let projectStatusBar: vscode.StatusBarItem | undefined;
+let summaryStatusBar: vscode.StatusBarItem | undefined;
+
+/** Tools shown in the status-bar summary, in display order, with readable labels. */
+const SUMMARY_TOOLS: { key: ToolKey; label: string }[] = [
+  { key: 'eslint', label: 'ESLint' },
+  { key: 'stylelint', label: 'stylelint' },
+  { key: 'ts-prune', label: 'ts-prune' },
+  { key: 'depcheck', label: 'depcheck' },
+];
 
 /** True if the setting has an explicit user value (workspace/global), not just its default. */
 function isConfigExplicitlySet(section: string): boolean {
@@ -353,6 +363,42 @@ function applyDiagnostics(
     entries.push([vscode.Uri.parse(uriStr), diagnostics]);
   }
   collection.set(entries);
+  updateSummaryStatusBar();
+}
+
+/**
+ * Refresh the status-bar summary from the current diagnostics across every tool.
+ * Shows a grand total (error icon when any error-severity problem exists, warning
+ * icon otherwise, check when clean) with a per-tool breakdown in the tooltip.
+ * Called after each run; hidden by "Clear results".
+ */
+function updateSummaryStatusBar(): void {
+  if (!summaryStatusBar) {
+    return;
+  }
+  let errors = 0;
+  const perTool = SUMMARY_TOOLS.map(({ key, label }) => {
+    let count = 0;
+    collections.get(key)?.forEach((_uri, diagnostics) => {
+      count += diagnostics.length;
+      for (const d of diagnostics) {
+        if (d.severity === vscode.DiagnosticSeverity.Error) {
+          errors++;
+        }
+      }
+    });
+    return { label, count };
+  });
+
+  const { total, text, tooltip } = formatProblemSummary(perTool);
+  const icon = errors > 0 ? '$(error)' : total > 0 ? '$(warning)' : '$(check)';
+  summaryStatusBar.text = `${icon} ${text}`;
+
+  const md = new vscode.MarkdownString();
+  md.appendMarkdown('**Angular Code Quality — current findings**\n\n');
+  md.appendMarkdown(`${tooltip}\n\nClick to open the Problems panel.`);
+  summaryStatusBar.tooltip = md;
+  summaryStatusBar.show();
 }
 
 /** "1 problem" / "3 problems" / "0 problems". */
@@ -841,6 +887,7 @@ function clearDiagnosticCollections(): void {
  */
 function clearAllDiagnostics(): void {
   clearDiagnosticCollections();
+  summaryStatusBar?.hide();
   vscode.window.setStatusBarMessage('Angular Code Quality: cleared all results.', 3000);
 }
 
@@ -1008,6 +1055,12 @@ export function activate(context: vscode.ExtensionContext): void {
   projectStatusBar.command = 'angularCodeQualityToolkit.selectProject';
   context.subscriptions.push(projectStatusBar);
 
+  // Problem-count summary, just right of the project item. Hidden until the first
+  // run populates it; clicking opens the Problems panel.
+  summaryStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 89);
+  summaryStatusBar.command = 'workbench.actions.view.problems';
+  context.subscriptions.push(summaryStatusBar);
+
   context.subscriptions.push(
     vscode.commands.registerCommand('angularCodeQualityToolkit.runDepcheck', () => runDepcheck()),
     vscode.commands.registerCommand('angularCodeQualityToolkit.runTsPrune', () => runTsPrune()),
@@ -1055,6 +1108,8 @@ export function deactivate(): void {
   outputChannel?.dispose();
   projectStatusBar?.dispose();
   projectStatusBar = undefined;
+  summaryStatusBar?.dispose();
+  summaryStatusBar = undefined;
   for (const collection of collections.values()) {
     collection.dispose();
   }

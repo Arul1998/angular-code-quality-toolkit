@@ -86,6 +86,20 @@ export function buildDiagnosticShape(issue: ParsedIssue, toolKey: ToolKey): Diag
 }
 
 /**
+ * Format the status-bar problem summary from per-tool counts. Pure (no vscode)
+ * so the wording is unit-tested; the caller supplies the codicon based on
+ * severity and wires the result onto the real StatusBarItem.
+ */
+export function formatProblemSummary(
+  perTool: { label: string; count: number }[]
+): { total: number; text: string; tooltip: string } {
+  const total = perTool.reduce((sum, t) => sum + t.count, 0);
+  const text = total === 0 ? 'Quality: clean' : `Quality: ${total}`;
+  const breakdown = perTool.map((t) => `${t.label}: ${t.count}`).join(' · ');
+  return { total, text, tooltip: breakdown };
+}
+
+/**
  * Resolve a path emitted by a CLI (ts-prune/eslint/stylelint) to an absolute
  * filesystem path using the project root. Paths like `src/app/...` or
  * `\src\app\...` (no drive letter) are treated as relative to the project root so

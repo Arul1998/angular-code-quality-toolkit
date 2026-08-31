@@ -15,9 +15,32 @@ import {
   SEVERITY_RANK,
   ANGULAR_IMPLICIT_PATTERNS,
   ParsedIssue,
+  formatProblemSummary,
 } from '../diagnostics';
 
 const CWD = path.resolve('/project');
+
+test('formatProblemSummary totals counts and builds a per-tool breakdown', () => {
+  const s = formatProblemSummary([
+    { label: 'ESLint', count: 3 },
+    { label: 'stylelint', count: 1 },
+    { label: 'ts-prune', count: 2 },
+    { label: 'depcheck', count: 0 },
+  ]);
+  assert.equal(s.total, 6);
+  assert.equal(s.text, 'Quality: 6');
+  assert.equal(s.tooltip, 'ESLint: 3 · stylelint: 1 · ts-prune: 2 · depcheck: 0');
+});
+
+test('formatProblemSummary says "clean" when there are no problems', () => {
+  const s = formatProblemSummary([
+    { label: 'ESLint', count: 0 },
+    { label: 'depcheck', count: 0 },
+  ]);
+  assert.equal(s.total, 0);
+  assert.equal(s.text, 'Quality: clean');
+  assert.equal(s.tooltip, 'ESLint: 0 · depcheck: 0');
+});
 
 test('resolveFilePath resolves relative paths against the project root', () => {
   assert.equal(resolveFilePath(CWD, 'src/app/foo.ts'), path.resolve(CWD, 'src/app/foo.ts'));

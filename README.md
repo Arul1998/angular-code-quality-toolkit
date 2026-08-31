@@ -56,6 +56,8 @@ Open the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and type "Angular Code
 
 When a run finishes you get a short notification, e.g. `Code quality scan completed: 14 problems found.`
 
+**Status bar** — after a run, an item shows the current total (e.g. `Quality: 6`) with a per-tool breakdown in its tooltip. Its icon signals severity (error / warning / clean). Click it to jump to the Problems panel; **Clear results** hides it.
+
 ---
 
 ## Quick fixes
