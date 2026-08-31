@@ -4,6 +4,10 @@ All notable changes to the Angular Code Quality Toolkit extension are documented
 
 ## [Unreleased]
 
+### Added
+
+- **Auto-fix commands for ESLint and stylelint.** New commands **Fix ESLint problems (--fix)** and **Fix stylelint problems (--fix)** run the tool with `--fix` to repair every auto-fixable issue, then re-scan so the Problems panel reflects only what's left. Open editors are saved first so `--fix` never overwrites unsaved changes on disk. Honors the same project scoping and package-manager detection as the corresponding "Run" commands.
+
 ## [0.5.0] - 2026-08-31
 
 ### Added

@@ -549,7 +549,7 @@ async function runTsPrune(batch: BatchOptions = {}): Promise<number> {
   });
 }
 
-async function runEslint(batch: BatchOptions = {}): Promise<number> {
+async function runEslint(batch: BatchOptions = {}, fix = false): Promise<number> {
   const folder = getWorkspaceFolder();
   if (!folder) {
     return -1;
@@ -558,6 +558,8 @@ async function runEslint(batch: BatchOptions = {}): Promise<number> {
   const pm = await resolvePackageManager(cwd);
   const { eslintUseJson, revealOutput } = getConfig();
   const output = getOutputChannel(revealOutput);
+  const label = fix ? 'ESLint (--fix)' : 'ESLint';
+  const fixFlag = fix ? ' --fix' : '';
 
   const tslintOnRaw = (raw: string): void => {
     if (raw.includes('tslint') || raw.includes('Cannot find builder')) {
@@ -580,10 +582,12 @@ async function runEslint(batch: BatchOptions = {}): Promise<number> {
   const project = await getActiveProject(cwd);
   if (workspace && workspace.projects.length > 1 && project?.hasLintTarget) {
     const json = eslintUseJson ? ' --format json' : '';
-    output.appendLine(`\nLinting Angular project "${project.name}" (ng lint ${project.name}).`);
+    output.appendLine(
+      `\n${fix ? 'Fixing' : 'Linting'} Angular project "${project.name}" (ng lint ${project.name}${fixFlag}).`
+    );
     return runTool({
-      label: 'ESLint',
-      command: `${binRunner(pm)} ng lint ${project.name}${json}`,
+      label,
+      command: `${binRunner(pm)} ng lint ${project.name}${fixFlag}${json}`,
       cwd,
       toolKey: 'eslint',
       noun: 'lint issue',
@@ -625,10 +629,11 @@ async function runEslint(batch: BatchOptions = {}): Promise<number> {
     return -1;
   }
 
-  const command = scriptCommand(pm, 'lint', eslintUseJson ? '--format json' : undefined);
+  const lintArgs = [fixFlag.trim(), eslintUseJson ? '--format json' : ''].filter(Boolean).join(' ');
+  const command = scriptCommand(pm, 'lint', lintArgs || undefined);
 
   return runTool({
-    label: 'ESLint',
+    label,
     command,
     cwd,
     toolKey: 'eslint',
@@ -641,7 +646,7 @@ async function runEslint(batch: BatchOptions = {}): Promise<number> {
   });
 }
 
-async function runStylelint(batch: BatchOptions = {}): Promise<number> {
+async function runStylelint(batch: BatchOptions = {}, fix = false): Promise<number> {
   const folder = getWorkspaceFolder();
   if (!folder) {
     return -1;
@@ -650,6 +655,7 @@ async function runStylelint(batch: BatchOptions = {}): Promise<number> {
   const pm = await resolvePackageManager(cwd);
   const project = await getActiveProject(cwd);
   const { stylelintUseJson } = getConfig();
+  const label = fix ? 'stylelint (--fix)' : 'stylelint';
 
   // Prefer an explicit user setting; otherwise scope globs to the active
   // project's source root (e.g. apps/web/src) instead of always src/.
@@ -675,7 +681,10 @@ async function runStylelint(batch: BatchOptions = {}): Promise<number> {
 
   let command: string;
   if (styleScript) {
-    command = scriptCommand(pm, styleScript, stylelintUseJson ? '--formatter json' : undefined);
+    const styleArgs = [fix ? '--fix' : '', stylelintUseJson ? '--formatter json' : '']
+      .filter(Boolean)
+      .join(' ');
+    command = scriptCommand(pm, styleScript, styleArgs || undefined);
     if (project && !isConfigExplicitlySet('stylelint.globs')) {
       getOutputChannel(getConfig().revealOutput).appendLine(
         `\n[Angular Code Quality] Using your "${styleScript}" script — its file patterns win over the ` +
@@ -684,13 +693,13 @@ async function runStylelint(batch: BatchOptions = {}): Promise<number> {
     }
   } else {
     const globs = stylelintGlobs.map(shellArg).join(' ');
-    command = stylelintUseJson
-      ? `${binRunner(pm)} stylelint ${globs} --allow-empty-input --formatter json`
-      : `${binRunner(pm)} stylelint ${globs} --allow-empty-input`;
+    const fixArg = fix ? ' --fix' : '';
+    const jsonArg = stylelintUseJson ? ' --formatter json' : '';
+    command = `${binRunner(pm)} stylelint ${globs}${fixArg} --allow-empty-input${jsonArg}`;
   }
 
   return runTool({
-    label: 'stylelint',
+    label,
     command,
     cwd,
     toolKey: 'stylelint',
@@ -700,6 +709,22 @@ async function runStylelint(batch: BatchOptions = {}): Promise<number> {
     parse: (raw) => parseStylelintOutput(raw, cwd),
     ...batch,
   });
+}
+
+/**
+ * Run ESLint / stylelint with `--fix` to auto-repair fixable problems, then let
+ * the normal parse step refresh the Problems panel with whatever remains. Open
+ * files are saved first so the tools don't overwrite unsaved editor changes on
+ * disk; VS Code reloads the (now clean) files after they're fixed.
+ */
+async function fixEslint(): Promise<void> {
+  await vscode.workspace.saveAll(false);
+  await runEslint({}, true);
+}
+
+async function fixStylelint(): Promise<void> {
+  await vscode.workspace.saveAll(false);
+  await runStylelint({}, true);
 }
 
 async function addEslintToAngular(): Promise<void> {
@@ -988,6 +1013,8 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('angularCodeQualityToolkit.runTsPrune', () => runTsPrune()),
     vscode.commands.registerCommand('angularCodeQualityToolkit.runEslint', () => runEslint()),
     vscode.commands.registerCommand('angularCodeQualityToolkit.runStylelint', () => runStylelint()),
+    vscode.commands.registerCommand('angularCodeQualityToolkit.fixEslint', () => fixEslint()),
+    vscode.commands.registerCommand('angularCodeQualityToolkit.fixStylelint', () => fixStylelint()),
     vscode.commands.registerCommand('angularCodeQualityToolkit.addEslintToAngular', () =>
       addEslintToAngular()
     ),

@@ -66,6 +66,16 @@
         "category": "Angular Code Quality"
       },
       {
+        "command": "angularCodeQualityToolkit.fixEslint",
+        "title": "Angular Code Quality: Fix ESLint problems (--fix)",
+        "category": "Angular Code Quality"
+      },
+      {
+        "command": "angularCodeQualityToolkit.fixStylelint",
+        "title": "Angular Code Quality: Fix stylelint problems (--fix)",
+        "category": "Angular Code Quality"
+      },
+      {
         "command": "angularCodeQualityToolkit.runAllChecks",
         "title": "Angular Code Quality: Run all checks",
         "category": "Angular Code Quality"
@@ -110,6 +120,16 @@
         },
         {
           "command": "angularCodeQualityToolkit.runStylelint",
+          "when": "workspaceFolderCount > 0",
+          "group": "navigation"
+        },
+        {
+          "command": "angularCodeQualityToolkit.fixEslint",
+          "when": "workspaceFolderCount > 0",
+          "group": "navigation"
+        },
+        {
+          "command": "angularCodeQualityToolkit.fixStylelint",
           "when": "workspaceFolderCount > 0",
           "group": "navigation"
         },

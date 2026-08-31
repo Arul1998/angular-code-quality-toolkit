@@ -36,6 +36,8 @@ Open the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and type "Angular Code
 | **Run ts-prune** | Unused TypeScript exports. |
 | **Run ESLint** | Lint issues (uses your `lint` npm script or `ng lint`). |
 | **Run stylelint** | CSS / SCSS issues. |
+| **Fix ESLint problems (--fix)** | Auto-fix fixable ESLint issues, then re-scan and show what's left. |
+| **Fix stylelint problems (--fix)** | Auto-fix fixable stylelint issues, then re-scan and show what's left. |
 | **Add ESLint to Angular project** | Runs `ng add @angular-eslint/schematics` (use if you're still on TSLint). |
 | **Select Angular project** | In a monorepo, choose which `angular.json` project to check. |
 | **Clear results** | Removes only this extension's problems. Leaves TypeScript/ESLint-extension problems alone. |
@@ -59,6 +61,8 @@ When a run finishes you get a short notification, e.g. `Code quality scan comple
 ## Quick fixes
 
 Some findings can be fixed in place. On a depcheck **"Unused dependency"** problem in `package.json`, open the code-action menu (the lightbulb, or `Ctrl+.` / `Cmd+.`) and choose **Remove unused dependency "&lt;name&gt;"** — the extension deletes that line, keeps the JSON valid (trailing comma and all), and clears the finding. If the same name is declared twice, it leaves the file alone and tells you, so nothing is removed by guesswork.
+
+For lint and style issues, **Fix ESLint problems (--fix)** and **Fix stylelint problems (--fix)** run the tool with `--fix` to auto-repair everything fixable, then re-scan so the Problems panel shows only what's left to fix by hand. Open editors are saved first so nothing unsaved is overwritten.
 
 ---
 

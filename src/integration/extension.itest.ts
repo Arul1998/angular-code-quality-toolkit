@@ -9,6 +9,8 @@ const CONTRIBUTED_COMMANDS = [
   'angularCodeQualityToolkit.runTsPrune',
   'angularCodeQualityToolkit.runEslint',
   'angularCodeQualityToolkit.runStylelint',
+  'angularCodeQualityToolkit.fixEslint',
+  'angularCodeQualityToolkit.fixStylelint',
   'angularCodeQualityToolkit.addEslintToAngular',
   'angularCodeQualityToolkit.runAllChecks',
   'angularCodeQualityToolkit.clearDiagnostics',
