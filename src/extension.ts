@@ -10,6 +10,7 @@ import {
   parseEslintOutput,
   parseStylelintOutput,
   ANGULAR_IMPLICIT_PATTERNS,
+  DIAGNOSTIC_SOURCES,
 } from './diagnostics';
 import {
   PackageManager,
@@ -25,6 +26,11 @@ import {
   styleGlobsForProject,
 } from './angularWorkspace';
 import { toolsForSavedFile } from './runOnSave';
+import {
+  UNUSED_DEPENDENCY_PREFIX,
+  dependencyNameFromMessage,
+  removeDependencyFromPackageJson,
+} from './codeActions';
 
 const DIAGNOSTIC_SOURCE = 'Angular Code Quality';
 
@@ -882,6 +888,89 @@ function handleDidSave(document: vscode.TextDocument): void {
   }
 }
 
+const REMOVE_UNUSED_DEPENDENCY_COMMAND = 'angularCodeQualityToolkit.removeUnusedDependency';
+
+/**
+ * Offers a "Remove unused dependency" quick fix on each depcheck
+ * "Unused dependency: <name>" diagnostic in a package.json. The heavy lifting
+ * (editing the file) runs in the bound command so the pure removal logic stays
+ * unit-tested in codeActions.ts.
+ */
+class UnusedDependencyCodeActionProvider implements vscode.CodeActionProvider {
+  static readonly providedCodeActionKinds = [vscode.CodeActionKind.QuickFix];
+
+  provideCodeActions(
+    document: vscode.TextDocument,
+    _range: vscode.Range | vscode.Selection,
+    context: vscode.CodeActionContext
+  ): vscode.CodeAction[] {
+    const actions: vscode.CodeAction[] = [];
+    for (const diagnostic of context.diagnostics) {
+      if (diagnostic.source !== DIAGNOSTIC_SOURCES.depcheck) {
+        continue;
+      }
+      const depName = dependencyNameFromMessage(diagnostic.message);
+      if (!depName) {
+        continue;
+      }
+      const action = new vscode.CodeAction(
+        `Remove unused dependency "${depName}"`,
+        vscode.CodeActionKind.QuickFix
+      );
+      action.diagnostics = [diagnostic];
+      action.command = {
+        command: REMOVE_UNUSED_DEPENDENCY_COMMAND,
+        title: 'Remove unused dependency',
+        arguments: [document.uri, depName],
+      };
+      actions.push(action);
+    }
+    return actions;
+  }
+}
+
+/**
+ * Command bound to the quick fix: remove `depName` from the package.json at
+ * `uri` and drop the matching depcheck diagnostic so it disappears immediately.
+ */
+async function removeUnusedDependency(uri: vscode.Uri, depName: string): Promise<void> {
+  let document: vscode.TextDocument;
+  try {
+    document = await vscode.workspace.openTextDocument(uri);
+  } catch {
+    void vscode.window.showErrorMessage(`Could not open ${uri.fsPath} to remove "${depName}".`);
+    return;
+  }
+
+  const updated = removeDependencyFromPackageJson(document.getText(), depName);
+  if (updated === undefined) {
+    void vscode.window.showWarningMessage(
+      `Couldn't remove "${depName}" automatically — edit package.json by hand (it may appear more than once).`
+    );
+    return;
+  }
+
+  const edit = new vscode.WorkspaceEdit();
+  const fullRange = new vscode.Range(
+    document.positionAt(0),
+    document.positionAt(document.getText().length)
+  );
+  edit.replace(uri, fullRange, updated);
+  const applied = await vscode.workspace.applyEdit(edit);
+  if (!applied) {
+    void vscode.window.showErrorMessage(`Failed to update ${uri.fsPath}.`);
+    return;
+  }
+
+  // Drop the resolved finding so it clears without waiting for the next run.
+  const depcheckCollection = collections.get('depcheck');
+  if (depcheckCollection) {
+    const expected = `${UNUSED_DEPENDENCY_PREFIX}${depName}`;
+    const remaining = (depcheckCollection.get(uri) ?? []).filter((d) => d.message !== expected);
+    depcheckCollection.set(uri, remaining);
+  }
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   const toolKeys: ToolKey[] = ['depcheck', 'ts-prune', 'eslint', 'stylelint'];
   for (const key of toolKeys) {
@@ -908,6 +997,16 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
     vscode.commands.registerCommand('angularCodeQualityToolkit.selectProject', () =>
       selectAngularProject()
+    ),
+    vscode.commands.registerCommand(
+      REMOVE_UNUSED_DEPENDENCY_COMMAND,
+      (uri: vscode.Uri, depName: string) => removeUnusedDependency(uri, depName)
+    ),
+    // Quick fix: "Remove unused dependency" on depcheck findings in package.json.
+    vscode.languages.registerCodeActionsProvider(
+      { pattern: '**/package.json' },
+      new UnusedDependencyCodeActionProvider(),
+      { providedCodeActionKinds: UnusedDependencyCodeActionProvider.providedCodeActionKinds }
     ),
     // Run-on-save: re-run the relevant tool(s) when a file is saved (opt-in).
     vscode.workspace.onDidSaveTextDocument(handleDidSave)

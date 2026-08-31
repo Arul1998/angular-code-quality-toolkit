@@ -56,6 +56,12 @@ When a run finishes you get a short notification, e.g. `Code quality scan comple
 
 ---
 
+## Quick fixes
+
+Some findings can be fixed in place. On a depcheck **"Unused dependency"** problem in `package.json`, open the code-action menu (the lightbulb, or `Ctrl+.` / `Cmd+.`) and choose **Remove unused dependency "&lt;name&gt;"** — the extension deletes that line, keeps the JSON valid (trailing comma and all), and clears the finding. If the same name is declared twice, it leaves the file alone and tells you, so nothing is removed by guesswork.
+
+---
+
 ## Setup
 
 You need an Angular workspace (a folder with `package.json`) and the tools you want to use installed in it:

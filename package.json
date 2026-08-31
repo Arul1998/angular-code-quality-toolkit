@@ -79,6 +79,11 @@
         "command": "angularCodeQualityToolkit.selectProject",
         "title": "Angular Code Quality: Select Angular project",
         "category": "Angular Code Quality"
+      },
+      {
+        "command": "angularCodeQualityToolkit.removeUnusedDependency",
+        "title": "Angular Code Quality: Remove unused dependency",
+        "category": "Angular Code Quality"
       }
     ],
     "menus": {
@@ -122,6 +127,10 @@
           "command": "angularCodeQualityToolkit.selectProject",
           "when": "workspaceFolderCount > 0",
           "group": "navigation"
+        },
+        {
+          "command": "angularCodeQualityToolkit.removeUnusedDependency",
+          "when": "false"
         }
       ]
     },

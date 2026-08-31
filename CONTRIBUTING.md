@@ -48,6 +48,7 @@ Pure, vscode-free logic lives in small modules so it can be unit-tested without 
 - `src/packageManager.ts` — package-manager detection and command building.
 - `src/angularWorkspace.ts` — reading `angular.json` (projects, builders).
 - `src/runOnSave.ts` — mapping a saved file to the tools that should re-run.
+- `src/codeActions.ts` — pure logic for quick fixes (e.g. removing an unused dependency from `package.json`).
 - `src/extension.ts` — the VS Code wiring (commands, diagnostics collections, run pipeline).
 
 Tests for the pure modules live in `src/test/*.test.ts` (run by `npm test`). Extension-host tests live in `src/integration/*.itest.ts` (run by `npm run test:integration`).

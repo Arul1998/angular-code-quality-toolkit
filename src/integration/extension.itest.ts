@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 
 const EXTENSION_ID = 'arul1998.angular-code-quality-toolkit';
 
-// The eight commands the extension contributes (must match package.json).
+// The commands the extension contributes (must match package.json).
 const CONTRIBUTED_COMMANDS = [
   'angularCodeQualityToolkit.runDepcheck',
   'angularCodeQualityToolkit.runTsPrune',
@@ -13,6 +13,7 @@ const CONTRIBUTED_COMMANDS = [
   'angularCodeQualityToolkit.runAllChecks',
   'angularCodeQualityToolkit.clearDiagnostics',
   'angularCodeQualityToolkit.selectProject',
+  'angularCodeQualityToolkit.removeUnusedDependency',
 ];
 
 suite('Angular Code Quality Toolkit — integration', () => {

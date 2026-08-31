@@ -2,6 +2,12 @@
 
 All notable changes to the Angular Code Quality Toolkit extension are documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **Quick fix: remove unused dependency.** depcheck "Unused dependency: &lt;name&gt;" findings in `package.json` now offer a **Remove unused dependency "&lt;name&gt;"** code action (the lightbulb, or `Ctrl+.`/`Cmd+.`). It deletes the dependency's line — fixing the trailing comma when it was the last entry so the JSON stays valid — and clears the finding immediately. Skipped (with a note) when the same name appears more than once, so nothing is removed by guesswork.
+
 ## [0.4.0] - 2026-08-23
 
 ### Added
