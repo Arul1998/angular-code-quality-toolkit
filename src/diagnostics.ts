@@ -9,8 +9,21 @@ import * as path from 'path';
 
 export type IssueSeverity = 'error' | 'warning' | 'info' | 'hint';
 
-/** The tools this extension runs. Each owns its own diagnostic collection. */
-export type ToolKey = 'depcheck' | 'ts-prune' | 'eslint' | 'stylelint';
+/**
+ * The tools this extension runs. Each owns its own diagnostic collection.
+ *
+ * `angular-template` is ESLint run over `.html` templates (via
+ * `@angular-eslint/template`); it uses the ESLint parsers but keeps its own
+ * collection so template findings don't overwrite `.ts` ESLint findings.
+ */
+export type ToolKey =
+  | 'depcheck'
+  | 'ts-prune'
+  | 'eslint'
+  | 'stylelint'
+  | 'knip'
+  | 'angular-template'
+  | 'madge';
 
 /**
  * Human-readable diagnostic `source` shown next to each entry in the Problems
@@ -23,6 +36,9 @@ export const DIAGNOSTIC_SOURCES: Record<ToolKey, string> = {
   stylelint: 'angular-quality-stylelint',
   'ts-prune': 'angular-quality-ts-prune',
   depcheck: 'angular-quality-depcheck',
+  knip: 'angular-quality-knip',
+  'angular-template': 'angular-quality-template',
+  madge: 'angular-quality-madge',
 };
 
 export interface ParsedIssue {
@@ -575,4 +591,191 @@ export function parseStylelintOutput(rawOutput: string, cwd: string): ParsedIssu
     return json;
   }
   return parseStylelintText(rawOutput, cwd);
+}
+
+/** A knip finding item — either a bare name or `{ name, line, col }`. */
+interface KnipItem {
+  name: string;
+  line?: number;
+  col?: number;
+}
+
+interface KnipIssueEntry {
+  file?: string;
+  exports?: unknown;
+  types?: unknown;
+  dependencies?: unknown;
+  devDependencies?: unknown;
+  optionalPeerDependencies?: unknown;
+  unlisted?: unknown;
+  unresolved?: unknown;
+  enumMembers?: Record<string, unknown>;
+}
+
+interface KnipJson {
+  files?: unknown;
+  issues?: KnipIssueEntry[];
+}
+
+/**
+ * Normalize a knip issue array whose items may be plain strings (older shapes)
+ * or `{ name, line, col }` objects (current). Anything unrecognizable is dropped.
+ */
+function normalizeKnipItems(items: unknown): KnipItem[] {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+  const result: KnipItem[] = [];
+  for (const item of items) {
+    if (typeof item === 'string') {
+      if (item.trim()) {
+        result.push({ name: item });
+      }
+    } else if (item && typeof item === 'object' && typeof (item as KnipItem).name === 'string') {
+      const it = item as KnipItem;
+      result.push({ name: it.name, line: it.line, col: it.col });
+    }
+  }
+  return result;
+}
+
+/** Turn `data.files` (unused files) into an array of strings, ignoring junk. */
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string' && v.trim() !== '') : [];
+}
+
+/**
+ * Parse `knip --reporter json` output. knip is the actively maintained successor
+ * to ts-prune/depcheck: it reports unused files, exports, types, enum members,
+ * and dependencies in one pass. Findings are mapped to their declared location
+ * where knip provides one (1-based line/col), otherwise to the top of the file.
+ */
+export function parseKnipOutput(rawOutput: string, cwd: string): ParsedIssue[] {
+  const issues: ParsedIssue[] = [];
+  const json = extractJson(rawOutput);
+  if (!json) {
+    return issues;
+  }
+
+  let data: KnipJson;
+  try {
+    data = JSON.parse(json);
+  } catch {
+    return issues;
+  }
+  if (!data || typeof data !== 'object') {
+    return issues;
+  }
+
+  // Unused files are reported at the top level, not inside `issues`.
+  for (const file of asStringArray(data.files)) {
+    issues.push({
+      file: resolveFilePath(cwd, file),
+      line: 0,
+      column: 0,
+      endColumn: 200,
+      message: 'Unused file (no references found)',
+      severity: 'warning',
+    });
+  }
+
+  const entries = Array.isArray(data.issues) ? data.issues : [];
+  for (const entry of entries) {
+    if (!entry || typeof entry.file !== 'string') {
+      continue;
+    }
+    const file = resolveFilePath(cwd, entry.file);
+    const pushItems = (items: unknown, label: string): void => {
+      for (const it of normalizeKnipItems(items)) {
+        const line = Math.max(0, (it.line ?? 1) - 1);
+        const column = Math.max(0, (it.col ?? 1) - 1);
+        issues.push({
+          file,
+          line,
+          column,
+          endColumn: Math.max(column + 1, column + it.name.length),
+          message: `${label}: ${it.name}`,
+          severity: 'warning',
+        });
+      }
+    };
+
+    pushItems(entry.exports, 'Unused export');
+    pushItems(entry.types, 'Unused type');
+    // knip separates prod/dev/peer, but all three read as "unused dependency" here.
+    pushItems(entry.dependencies, 'Unused dependency');
+    pushItems(entry.devDependencies, 'Unused dependency');
+    pushItems(entry.optionalPeerDependencies, 'Unused optional peer dependency');
+    pushItems(entry.unlisted, 'Unlisted dependency (used but not in package.json)');
+    pushItems(entry.unresolved, 'Unresolved import');
+
+    if (entry.enumMembers && typeof entry.enumMembers === 'object') {
+      for (const [enumName, members] of Object.entries(entry.enumMembers)) {
+        for (const it of normalizeKnipItems(members)) {
+          const line = Math.max(0, (it.line ?? 1) - 1);
+          const column = Math.max(0, (it.col ?? 1) - 1);
+          issues.push({
+            file,
+            line,
+            column,
+            endColumn: Math.max(column + 1, column + it.name.length),
+            message: `Unused enum member: ${enumName}.${it.name}`,
+            severity: 'warning',
+          });
+        }
+      }
+    }
+  }
+
+  return issues;
+}
+
+/**
+ * Parse `madge --circular --json <dir>` output: a JSON array of cycles, each a
+ * list of file paths forming a dependency loop (e.g. `[["a.ts","b.ts"]]`). Each
+ * cycle becomes one diagnostic on its first file, describing the full loop so
+ * the reader can see the chain. Non-array output (a full dependency graph, or an
+ * error) yields no findings.
+ */
+export function parseMadgeOutput(rawOutput: string, cwd: string): ParsedIssue[] {
+  const issues: ParsedIssue[] = [];
+  const json = extractJson(rawOutput);
+  if (!json || !json.startsWith('[')) {
+    return issues;
+  }
+
+  let data: unknown;
+  try {
+    data = JSON.parse(json);
+  } catch {
+    return issues;
+  }
+  if (!Array.isArray(data)) {
+    return issues;
+  }
+
+  for (const cycle of data) {
+    if (!Array.isArray(cycle) || cycle.length === 0) {
+      continue;
+    }
+    const files = cycle.filter((f): f is string => typeof f === 'string' && f.trim() !== '');
+    if (files.length === 0) {
+      continue;
+    }
+    // Close the loop visually (a → b → a) unless madge already repeated the first.
+    const chain = [...files];
+    if (chain[chain.length - 1] !== chain[0]) {
+      chain.push(chain[0]);
+    }
+    issues.push({
+      file: resolveFilePath(cwd, files[0]),
+      line: 0,
+      column: 0,
+      endColumn: 200,
+      message: `Circular dependency: ${chain.join(' → ')}`,
+      severity: 'warning',
+    });
+  }
+
+  return issues;
 }

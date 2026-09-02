@@ -75,3 +75,41 @@ export function removeDependencyFromPackageJson(
 
   return lines.join(eol);
 }
+
+/** Prefix of the ts-prune / knip "unused export" diagnostic message. */
+export const UNUSED_EXPORT_PREFIX = 'Unused export: ';
+
+/**
+ * Given the source line that declares an unused export, return the same line
+ * with its leading `export ` keyword removed (demoting it to a file-private
+ * declaration) — or `undefined` when it isn't a form we can safely transform.
+ *
+ * This is deliberately conservative. It handles the common *declaration* forms
+ * (`export function|const|let|var|class|abstract class|interface|type|enum|
+ * declare|namespace|async function`) by dropping only the `export` keyword, so
+ * the symbol keeps working for any in-file use. It refuses re-export and default
+ * forms — `export {…}`, `export * …`, `export type {…}`, `export default …` —
+ * where removing the keyword would delete or break more than one binding.
+ */
+export function removeExportKeywordFromLine(line: string): string | undefined {
+  const match = line.match(/^(\s*)export\s+(.*)$/);
+  if (!match) {
+    return undefined;
+  }
+  const indent = match[1];
+  const rest = match[2];
+
+  // Re-export / default forms: not a safe single-symbol demotion.
+  if (/^(default\b|\*|\{|type\s*\{)/.test(rest)) {
+    return undefined;
+  }
+  // Only recognized declaration keywords, so we never mangle arbitrary text.
+  if (
+    !/^(async\s+function|function\*?|const|let|var|class|abstract\s+class|interface|enum|type|declare|namespace)\b/.test(
+      rest
+    )
+  ) {
+    return undefined;
+  }
+  return indent + rest;
+}

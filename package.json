@@ -2,7 +2,7 @@
   "name": "angular-code-quality-toolkit",
   "displayName": "Angular Code Quality Toolkit",
   "description": "VS Code extension to run Angular code-quality tools (depcheck, ts-prune, ESLint, stylelint), add ESLint to Angular projects, and help clean unused code, dependencies, and styles.",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "publisher": "arul1998",
   "icon": "assets/icon.png",
   "repository": {
@@ -66,6 +66,26 @@
         "category": "Angular Code Quality"
       },
       {
+        "command": "angularCodeQualityToolkit.runKnip",
+        "title": "Angular Code Quality: Run knip (unused files, exports, dependencies)",
+        "category": "Angular Code Quality"
+      },
+      {
+        "command": "angularCodeQualityToolkit.runTemplateLint",
+        "title": "Angular Code Quality: Lint Angular templates (.html)",
+        "category": "Angular Code Quality"
+      },
+      {
+        "command": "angularCodeQualityToolkit.runMadge",
+        "title": "Angular Code Quality: Find circular dependencies (madge)",
+        "category": "Angular Code Quality"
+      },
+      {
+        "command": "angularCodeQualityToolkit.exportReport",
+        "title": "Angular Code Quality: Export report (JSON)",
+        "category": "Angular Code Quality"
+      },
+      {
         "command": "angularCodeQualityToolkit.fixEslint",
         "title": "Angular Code Quality: Fix ESLint problems (--fix)",
         "category": "Angular Code Quality"
@@ -93,6 +113,11 @@
       {
         "command": "angularCodeQualityToolkit.removeUnusedDependency",
         "title": "Angular Code Quality: Remove unused dependency",
+        "category": "Angular Code Quality"
+      },
+      {
+        "command": "angularCodeQualityToolkit.removeUnusedExport",
+        "title": "Angular Code Quality: Remove export keyword",
         "category": "Angular Code Quality"
       }
     ],
@@ -124,6 +149,26 @@
           "group": "navigation"
         },
         {
+          "command": "angularCodeQualityToolkit.runKnip",
+          "when": "workspaceFolderCount > 0",
+          "group": "navigation"
+        },
+        {
+          "command": "angularCodeQualityToolkit.runTemplateLint",
+          "when": "workspaceFolderCount > 0",
+          "group": "navigation"
+        },
+        {
+          "command": "angularCodeQualityToolkit.runMadge",
+          "when": "workspaceFolderCount > 0",
+          "group": "navigation"
+        },
+        {
+          "command": "angularCodeQualityToolkit.exportReport",
+          "when": "workspaceFolderCount > 0",
+          "group": "navigation"
+        },
+        {
           "command": "angularCodeQualityToolkit.fixEslint",
           "when": "workspaceFolderCount > 0",
           "group": "navigation"
@@ -150,6 +195,10 @@
         },
         {
           "command": "angularCodeQualityToolkit.removeUnusedDependency",
+          "when": "false"
+        },
+        {
+          "command": "angularCodeQualityToolkit.removeUnusedExport",
           "when": "false"
         }
       ]
@@ -185,6 +234,16 @@
           ],
           "description": "Glob patterns stylelint should lint when no \"lint:styles\" or \"stylelint\" npm script is defined."
         },
+        "angularCodeQuality.template.globs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "src/**/*.html"
+          ],
+          "description": "Glob patterns for \"Lint Angular templates\" (runs ESLint over your .html templates via @angular-eslint/template). In a multi-project workspace, this defaults to the selected project's source root unless set explicitly."
+        },
         "angularCodeQuality.eslint.useJsonFormat": {
           "type": "boolean",
           "default": true,
@@ -216,7 +275,12 @@
         "angularCodeQuality.runOnSave": {
           "type": "boolean",
           "default": false,
-          "description": "Automatically re-run the relevant checks when you save a file, updating the Problems panel in the background (no notifications). Saving a .ts file re-runs ESLint and ts-prune; a .css/.scss file re-runs stylelint; package.json re-runs depcheck. Runs are debounced so rapid saves trigger a single run."
+          "description": "Automatically re-run the relevant checks when you save a file, updating the Problems panel in the background (no notifications). Saving a .ts file re-runs ESLint and ts-prune; a .html file re-runs the Angular template lint; a .css/.scss file re-runs stylelint; package.json re-runs depcheck. Runs are debounced so rapid saves trigger a single run."
+        },
+        "angularCodeQuality.runOnActivation": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically run all checks once when the workspace opens, so the Problems panel is populated without running a command by hand. Runs quietly in the background (a status-bar spinner, no popups). Off by default."
         }
       }
     }

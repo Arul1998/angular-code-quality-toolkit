@@ -31,11 +31,15 @@ Open the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and type "Angular Code
 
 | Command | What it does |
 | --- | --- |
-| **Run all checks** | Runs all four tools and shows a combined total. Start here. |
+| **Run all checks** | Runs the four core tools and shows a combined total. Start here. |
 | **Run depcheck** | Unused / missing dependencies. |
 | **Run ts-prune** | Unused TypeScript exports. |
 | **Run ESLint** | Lint issues (uses your `lint` npm script or `ng lint`). |
 | **Run stylelint** | CSS / SCSS issues. |
+| **Run knip** | Unused files, exports, types, enum members, and dependencies in one pass (the maintained successor to ts-prune/depcheck). |
+| **Lint Angular templates (.html)** | Runs ESLint over your HTML templates (via `@angular-eslint/template`). |
+| **Find circular dependencies (madge)** | Reports each dependency cycle in your TypeScript sources. |
+| **Export report (JSON)** | Runs the core checks and writes `angular-code-quality-report.json` for CI / diffing. |
 | **Fix ESLint problems (--fix)** | Auto-fix fixable ESLint issues, then re-scan and show what's left. |
 | **Fix stylelint problems (--fix)** | Auto-fix fixable stylelint issues, then re-scan and show what's left. |
 | **Add ESLint to Angular project** | Runs `ng add @angular-eslint/schematics` (use if you're still on TSLint). |
@@ -64,6 +68,8 @@ When a run finishes you get a short notification, e.g. `Code quality scan comple
 
 Some findings can be fixed in place. On a depcheck **"Unused dependency"** problem in `package.json`, open the code-action menu (the lightbulb, or `Ctrl+.` / `Cmd+.`) and choose **Remove unused dependency "&lt;name&gt;"** — the extension deletes that line, keeps the JSON valid (trailing comma and all), and clears the finding. If the same name is declared twice, it leaves the file alone and tells you, so nothing is removed by guesswork.
 
+On a ts-prune **"Unused export"** problem on a simple declaration, choose **Remove export keyword (keep as file-private)** — it drops only the `export` keyword, demoting the symbol instead of deleting it, so any in-file use keeps working. It won't touch re-export or `default` forms (`export {…}`, `export * …`, `export default …`), where removing the keyword wouldn't be safe.
+
 For lint and style issues, **Fix ESLint problems (--fix)** and **Fix stylelint problems (--fix)** run the tool with `--fix` to auto-repair everything fixable, then re-scan so the Problems panel shows only what's left to fix by hand. Open editors are saved first so nothing unsaved is overwritten.
 
 ---
@@ -74,6 +80,12 @@ You need an Angular workspace (a folder with `package.json`) and the tools you w
 
 ```bash
 npm install --save-dev depcheck ts-prune stylelint stylelint-config-standard-scss
+```
+
+Optional tools, only if you want their commands:
+
+```bash
+npm install --save-dev knip madge @angular-eslint/eslint-plugin-template @angular-eslint/template-parser
 ```
 
 For ESLint, your `package.json` should have a `lint` script (e.g. `"lint": "ng lint"`). If you're still on TSLint, run **Add ESLint to Angular project** first.
@@ -99,12 +111,14 @@ To catch unused variables and parameters, add the rule to your ESLint config so 
 | `angularCodeQuality.packageManager` | `auto` | `auto`, `npm`, `yarn`, `pnpm`, or `bun`. `auto` reads your lockfile. Yarn 1 users: set this to `npm`. |
 | `angularCodeQuality.tsPrune.tsconfigPath` | `tsconfig.app.json` | Which tsconfig ts-prune uses. |
 | `angularCodeQuality.stylelint.globs` | `["src/**/*.scss", "src/**/*.css"]` | Files stylelint checks when no style script exists. |
+| `angularCodeQuality.template.globs` | `["src/**/*.html"]` | Templates **Lint Angular templates** checks. Defaults to the selected project's source root in a monorepo. |
 | `angularCodeQuality.eslint.useJsonFormat` | `true` | Ask ESLint for JSON output (more accurate). Turn off if your lint script rejects `--format`. |
 | `angularCodeQuality.stylelint.useJsonFormat` | `true` | Ask stylelint for JSON output. |
 | `angularCodeQuality.depcheck.ignoreAngularImplicit` | `true` | Hide false "unused" hits for packages Angular uses implicitly (`@angular/*`, `zone.js`, `rxjs`, `tslib`, `typescript`, karma/jasmine, builders). |
 | `angularCodeQuality.depcheck.ignores` | `[]` | Extra packages to hide (`*` wildcard, e.g. `@my-scope/*`). |
 | `angularCodeQuality.revealOutputOnRun` | `false` | Auto-open the Output channel on each run. Off by default — findings go to the Problems panel; enable this only to watch raw tool logs. |
 | `angularCodeQuality.runOnSave` | `false` | Re-run the relevant checks automatically when you save a file (see below). |
+| `angularCodeQuality.runOnActivation` | `false` | Run all checks once when the workspace opens (quietly, no popups), so the Problems panel is populated on open. |
 
 ---
 
@@ -115,8 +129,11 @@ Set `angularCodeQuality.runOnSave` to `true` and the extension re-runs the relev
 | You save… | It re-runs |
 | --- | --- |
 | a `.ts` file | ESLint + ts-prune |
+| a `.html` file | Angular template lint |
 | a `.css` / `.scss` file | stylelint |
 | `package.json` | depcheck |
+
+(knip and madge are whole-project scans, so run-on-save never triggers them — run them from the Command Palette when you want them.)
 
 Runs happen **quietly** in the background (no notifications) and are **debounced**, so a "Save All" or a formatter re-saving triggers a single run rather than one per file. Off by default.
 

@@ -4,6 +4,17 @@ All notable changes to the Angular Code Quality Toolkit extension are documented
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-02
+
+### Added
+
+- **knip support.** New command **Run knip** runs [knip](https://knip.dev) — the actively maintained successor to ts-prune/depcheck — and reports unused files, exports, types, enum members, and dependencies in a single pass. Findings land in the Problems panel under their own `angular-quality-knip` source, at their declared location where knip provides one.
+- **Angular template linting.** New command **Lint Angular templates (.html)** runs ESLint over your HTML templates (via `@angular-eslint/template`) and reports into its own `angular-quality-template` source, so template findings never overwrite the `.ts` ESLint results. Saving a `.html` file re-runs it when **Run on save** is enabled. Scopes to the selected project's source root in a monorepo (override with `angularCodeQuality.template.globs`).
+- **Circular-dependency detection (madge).** New command **Find circular dependencies (madge)** runs [madge](https://github.com/pahen/madge) over the project's TypeScript sources and reports each dependency cycle as one finding describing the full loop (e.g. `Circular dependency: a.ts → b.ts → a.ts`).
+- **Quick fix: remove export keyword.** ts-prune **"Unused export"** findings on a simple declaration (`export function`/`const`/`class`/`interface`/`type`/`enum`/…) now offer a **Remove export keyword (keep as file-private)** code action. It drops only the `export` keyword — demoting the symbol rather than deleting it — and refuses re-export/`default` forms (`export {…}`, `export * …`, `export default …`) where that wouldn't be safe.
+- **Export report (JSON).** New command **Export report (JSON)** runs the four core checks and writes every current finding to `angular-code-quality-report.json` in the workspace root (then opens it). The output is deterministic — sorted, with per-tool and per-severity roll-ups — so it can be committed or diffed for CI parity.
+- **Run on activation.** New setting `angularCodeQuality.runOnActivation` (default off): run all checks once when the workspace opens, quietly (a status-bar spinner, no popups), so the Problems panel is populated without running a command by hand.
+
 ## [0.6.0] - 2026-08-31
 
 ### Added

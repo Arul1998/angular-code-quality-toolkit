@@ -4,6 +4,8 @@ import {
   parseAngularJson,
   defaultProject,
   styleGlobsForProject,
+  templateGlobsForProject,
+  sourceDirForProject,
 } from '../angularWorkspace';
 
 test('parseAngularJson returns null for non-Angular JSON', () => {
@@ -115,4 +117,24 @@ test('styleGlobsForProject derives globs from sourceRoot', () => {
     styleGlobsForProject({ name: 'x', root: '', hasLintTarget: false }),
     ['src/**/*.scss', 'src/**/*.css']
   );
+});
+
+test('templateGlobsForProject derives an html glob from sourceRoot', () => {
+  assert.deepEqual(
+    templateGlobsForProject({ name: 'web', root: 'apps/web', sourceRoot: 'apps/web/src', hasLintTarget: false }),
+    ['apps/web/src/**/*.html']
+  );
+  assert.deepEqual(
+    templateGlobsForProject({ name: 'x', root: '', hasLintTarget: false }),
+    ['src/**/*.html']
+  );
+});
+
+test('sourceDirForProject returns the project source base', () => {
+  assert.equal(
+    sourceDirForProject({ name: 'web', root: 'apps/web', sourceRoot: 'apps/web/src', hasLintTarget: false }),
+    'apps/web/src'
+  );
+  assert.equal(sourceDirForProject({ name: 'x', root: 'libs/x', hasLintTarget: false }), 'libs/x');
+  assert.equal(sourceDirForProject({ name: 'y', root: '', hasLintTarget: false }), 'src');
 });

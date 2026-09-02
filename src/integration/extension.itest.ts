@@ -9,6 +9,10 @@ const CONTRIBUTED_COMMANDS = [
   'angularCodeQualityToolkit.runTsPrune',
   'angularCodeQualityToolkit.runEslint',
   'angularCodeQualityToolkit.runStylelint',
+  'angularCodeQualityToolkit.runKnip',
+  'angularCodeQualityToolkit.runTemplateLint',
+  'angularCodeQualityToolkit.runMadge',
+  'angularCodeQualityToolkit.exportReport',
   'angularCodeQualityToolkit.fixEslint',
   'angularCodeQualityToolkit.fixStylelint',
   'angularCodeQualityToolkit.addEslintToAngular',
@@ -16,6 +20,7 @@ const CONTRIBUTED_COMMANDS = [
   'angularCodeQualityToolkit.clearDiagnostics',
   'angularCodeQualityToolkit.selectProject',
   'angularCodeQualityToolkit.removeUnusedDependency',
+  'angularCodeQualityToolkit.removeUnusedExport',
 ];
 
 suite('Angular Code Quality Toolkit — integration', () => {

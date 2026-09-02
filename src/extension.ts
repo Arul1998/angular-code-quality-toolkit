@@ -3,12 +3,15 @@ import { spawn } from 'child_process';
 import * as path from 'path';
 import {
   ParsedIssue,
+  IssueSeverity,
   ToolKey,
   buildDiagnosticShape,
   parseDepcheckOutput,
   parseTsPruneOutput,
   parseEslintOutput,
   parseStylelintOutput,
+  parseKnipOutput,
+  parseMadgeOutput,
   ANGULAR_IMPLICIT_PATTERNS,
   DIAGNOSTIC_SOURCES,
   formatProblemSummary,
@@ -25,13 +28,17 @@ import {
   parseAngularJson,
   defaultProject,
   styleGlobsForProject,
+  templateGlobsForProject,
+  sourceDirForProject,
 } from './angularWorkspace';
 import { toolsForSavedFile } from './runOnSave';
 import {
   UNUSED_DEPENDENCY_PREFIX,
   dependencyNameFromMessage,
   removeDependencyFromPackageJson,
+  removeExportKeywordFromLine,
 } from './codeActions';
+import { ReportFinding, buildReport } from './report';
 
 const DIAGNOSTIC_SOURCE = 'Angular Code Quality';
 
@@ -43,18 +50,45 @@ const DIAGNOSTIC_SOURCE = 'Angular Code Quality';
  */
 const collections = new Map<ToolKey, vscode.DiagnosticCollection>();
 let outputChannel: vscode.OutputChannel | undefined;
+/** This extension's version, captured at activation for the exported report. */
+let extensionVersion = '0.0.0';
 
 /** Remembered Angular project selection per workspace folder (by fsPath -> project name). */
 const activeProjectByFolder = new Map<string, string>();
 let projectStatusBar: vscode.StatusBarItem | undefined;
 let summaryStatusBar: vscode.StatusBarItem | undefined;
 
-/** Tools shown in the status-bar summary, in display order, with readable labels. */
+/**
+ * Core tools shown in the status-bar summary breakdown even when their count is
+ * zero (they run as part of "Run all checks"). Order is the display order.
+ */
 const SUMMARY_TOOLS: { key: ToolKey; label: string }[] = [
   { key: 'eslint', label: 'ESLint' },
   { key: 'stylelint', label: 'stylelint' },
   { key: 'ts-prune', label: 'ts-prune' },
   { key: 'depcheck', label: 'depcheck' },
+];
+
+/**
+ * Opt-in tools run only by their own command. They appear in the summary
+ * breakdown only when they have findings, so the tooltip isn't cluttered with
+ * "knip: 0" for tools the user never ran.
+ */
+const EXTRA_SUMMARY_TOOLS: { key: ToolKey; label: string }[] = [
+  { key: 'knip', label: 'knip' },
+  { key: 'angular-template', label: 'templates' },
+  { key: 'madge', label: 'circular' },
+];
+
+/** Every tool key, in a stable order — used to create collections and clear/report. */
+const ALL_TOOL_KEYS: ToolKey[] = [
+  'depcheck',
+  'ts-prune',
+  'eslint',
+  'stylelint',
+  'knip',
+  'angular-template',
+  'madge',
 ];
 
 /** True if the setting has an explicit user value (workspace/global), not just its default. */
@@ -73,12 +107,14 @@ type PackageManagerSetting = 'auto' | PackageManager;
 interface ToolkitConfig {
   tsconfigPath: string;
   stylelintGlobs: string[];
+  templateGlobs: string[];
   eslintUseJson: boolean;
   stylelintUseJson: boolean;
   revealOutput: boolean;
   packageManager: PackageManagerSetting;
   depcheckIgnoreAngularImplicit: boolean;
   depcheckIgnores: string[];
+  runOnActivation: boolean;
 }
 
 function getConfig(): ToolkitConfig {
@@ -86,12 +122,14 @@ function getConfig(): ToolkitConfig {
   return {
     tsconfigPath: c.get<string>('tsPrune.tsconfigPath', 'tsconfig.app.json'),
     stylelintGlobs: c.get<string[]>('stylelint.globs', ['src/**/*.scss', 'src/**/*.css']),
+    templateGlobs: c.get<string[]>('template.globs', ['src/**/*.html']),
     eslintUseJson: c.get<boolean>('eslint.useJsonFormat', true),
     stylelintUseJson: c.get<boolean>('stylelint.useJsonFormat', true),
     revealOutput: c.get<boolean>('revealOutputOnRun', false),
     packageManager: c.get<PackageManagerSetting>('packageManager', 'auto'),
     depcheckIgnoreAngularImplicit: c.get<boolean>('depcheck.ignoreAngularImplicit', true),
     depcheckIgnores: c.get<string[]>('depcheck.ignores', []),
+    runOnActivation: c.get<boolean>('runOnActivation', false),
   };
 }
 
@@ -377,7 +415,7 @@ function updateSummaryStatusBar(): void {
     return;
   }
   let errors = 0;
-  const perTool = SUMMARY_TOOLS.map(({ key, label }) => {
+  const countFor = (key: ToolKey): number => {
     let count = 0;
     collections.get(key)?.forEach((_uri, diagnostics) => {
       count += diagnostics.length;
@@ -387,8 +425,18 @@ function updateSummaryStatusBar(): void {
         }
       }
     });
-    return { label, count };
-  });
+    return count;
+  };
+
+  // Core tools always appear (even at 0); the opt-in extras appear only when the
+  // user has run them and they found something.
+  const perTool = SUMMARY_TOOLS.map(({ key, label }) => ({ label, count: countFor(key) }));
+  for (const { key, label } of EXTRA_SUMMARY_TOOLS) {
+    const count = countFor(key);
+    if (count > 0) {
+      perTool.push({ label, count });
+    }
+  }
 
   const { total, text, tooltip } = formatProblemSummary(perTool);
   const icon = errors > 0 ? '$(error)' : total > 0 ? '$(warning)' : '$(check)';
@@ -758,6 +806,100 @@ async function runStylelint(batch: BatchOptions = {}, fix = false): Promise<numb
 }
 
 /**
+ * Run knip — the actively maintained successor to ts-prune/depcheck — over the
+ * whole project. Reports unused files, exports, types, enum members, and
+ * dependencies in one pass, into its own collection.
+ */
+async function runKnip(batch: BatchOptions = {}): Promise<number> {
+  const folder = getWorkspaceFolder();
+  if (!folder) {
+    return -1;
+  }
+  const cwd = folder.uri.fsPath;
+  const pm = await resolvePackageManager(cwd);
+
+  return runTool({
+    label: 'knip',
+    command: `${binRunner(pm)} knip --reporter json --no-exit-code`,
+    cwd,
+    toolKey: 'knip',
+    noun: 'issue',
+    packageManager: pm,
+    installHint: `Install it with: ${addDevCommand(pm, 'knip')}`,
+    parse: (raw) => parseKnipOutput(raw, cwd),
+    ...batch,
+  });
+}
+
+/**
+ * Lint Angular HTML templates with ESLint (via `@angular-eslint/template`).
+ * Reports into its own `angular-template` collection so template findings never
+ * overwrite the `.ts` ESLint results. Uses the same JSON-preferred parsing as
+ * "Run ESLint". Scopes globs to the active project's source root unless the user
+ * set `angularCodeQuality.template.globs` explicitly.
+ */
+async function runTemplateLint(batch: BatchOptions = {}): Promise<number> {
+  const folder = getWorkspaceFolder();
+  if (!folder) {
+    return -1;
+  }
+  const cwd = folder.uri.fsPath;
+  const pm = await resolvePackageManager(cwd);
+  const project = await getActiveProject(cwd);
+  const { eslintUseJson } = getConfig();
+
+  let templateGlobs = getConfig().templateGlobs;
+  if (!isConfigExplicitlySet('template.globs') && project) {
+    templateGlobs = templateGlobsForProject(project);
+  }
+
+  const globs = templateGlobs.map(shellArg).join(' ');
+  const json = eslintUseJson ? ' --format json' : '';
+  // --no-error-on-unmatched-pattern: a project with no matching templates is a
+  // clean result, not a failure.
+  const command = `${binRunner(pm)} eslint ${globs} --no-error-on-unmatched-pattern${json}`;
+
+  return runTool({
+    label: 'Angular templates',
+    command,
+    cwd,
+    toolKey: 'angular-template',
+    noun: 'template issue',
+    packageManager: pm,
+    installHint: `Install it with: ${addDevCommand(pm, '@angular-eslint/eslint-plugin-template @angular-eslint/template-parser')}`,
+    parse: (raw) => parseEslintOutput(raw, cwd),
+    ...batch,
+  });
+}
+
+/**
+ * Run madge to find circular dependencies in the project's TypeScript sources.
+ * Each cycle is reported as one finding on its first file, describing the loop.
+ */
+async function runMadge(batch: BatchOptions = {}): Promise<number> {
+  const folder = getWorkspaceFolder();
+  if (!folder) {
+    return -1;
+  }
+  const cwd = folder.uri.fsPath;
+  const pm = await resolvePackageManager(cwd);
+  const project = await getActiveProject(cwd);
+  const sourceDir = project ? sourceDirForProject(project) : 'src';
+
+  return runTool({
+    label: 'madge (circular deps)',
+    command: `${binRunner(pm)} madge --circular --extensions ts --json ${shellArg(sourceDir)}`,
+    cwd,
+    toolKey: 'madge',
+    noun: 'circular dependency',
+    packageManager: pm,
+    installHint: `Install it with: ${addDevCommand(pm, 'madge')}`,
+    parse: (raw) => parseMadgeOutput(raw, cwd),
+    ...batch,
+  });
+}
+
+/**
  * Run ESLint / stylelint with `--fix` to auto-repair fixable problems, then let
  * the normal parse step refresh the Problems panel with whatever remains. Open
  * files are saved first so the tools don't overwrite unsaved editor changes on
@@ -792,7 +934,16 @@ async function addEslintToAngular(): Promise<void> {
   );
 }
 
-async function runAllChecks(): Promise<void> {
+interface RunAllOptions {
+  /**
+   * Quieter presentation for the run-on-activation path: a status-bar progress
+   * spinner instead of a notification, and no final toast (a brief status-bar
+   * message instead), so opening a workspace isn't interrupted by popups.
+   */
+  background?: boolean;
+}
+
+async function runAllChecks(opts: RunAllOptions = {}): Promise<void> {
   if (!getWorkspaceFolder()) {
     return;
   }
@@ -807,7 +958,9 @@ async function runAllChecks(): Promise<void> {
 
   await vscode.window.withProgress(
     {
-      location: vscode.ProgressLocation.Notification,
+      location: opts.background
+        ? vscode.ProgressLocation.Window
+        : vscode.ProgressLocation.Notification,
       title: 'Angular Code Quality: running all checks…',
       cancellable: true,
     },
@@ -865,9 +1018,120 @@ async function runAllChecks(): Promise<void> {
       output.appendLine(`  Total: ${pluralizeProblems(total)}`);
       output.appendLine('See the Problems view (View → Problems) for details.');
 
-      // Concise single-line toast (VS Code collapses newlines in notifications).
+      const summaryText = `Angular Code Quality — scan completed: ${pluralizeProblems(total)} (${toastParts.join(', ')}).`;
+      if (opts.background) {
+        // Activation path: don't interrupt with a popup; the status-bar summary
+        // already reflects the totals.
+        vscode.window.setStatusBarMessage(summaryText, 5000);
+      } else {
+        // Concise single-line toast (VS Code collapses newlines in notifications).
+        vscode.window.showInformationMessage(summaryText);
+      }
+    }
+  );
+}
+
+/** vscode severity → the report's textual severity. */
+function severityToText(severity: vscode.DiagnosticSeverity): IssueSeverity {
+  switch (severity) {
+    case vscode.DiagnosticSeverity.Error:
+      return 'error';
+    case vscode.DiagnosticSeverity.Warning:
+      return 'warning';
+    case vscode.DiagnosticSeverity.Hint:
+      return 'hint';
+    default:
+      return 'info';
+  }
+}
+
+/** Flatten every current diagnostic into serializable report findings (paths workspace-relative). */
+function gatherReportFindings(cwd: string): ReportFinding[] {
+  const findings: ReportFinding[] = [];
+  for (const key of ALL_TOOL_KEYS) {
+    const collection = collections.get(key);
+    if (!collection) {
+      continue;
+    }
+    collection.forEach((uri, diagnostics) => {
+      const rel = path.relative(cwd, uri.fsPath) || uri.fsPath;
+      for (const d of diagnostics) {
+        findings.push({
+          tool: DIAGNOSTIC_SOURCES[key],
+          file: rel.split(path.sep).join('/'),
+          line: d.range.start.line + 1,
+          column: d.range.start.character + 1,
+          severity: severityToText(d.severity),
+          message: d.message,
+        });
+      }
+    });
+  }
+  return findings;
+}
+
+/**
+ * CI-parity export: run the four core checks, then write every current finding
+ * (including any knip/template/madge results already present) to
+ * `angular-code-quality-report.json` in the workspace root and open it. The JSON
+ * is deterministic so it can be committed or diffed in CI.
+ */
+async function exportReport(): Promise<void> {
+  const folder = getWorkspaceFolder();
+  if (!folder) {
+    return;
+  }
+  const cwd = folder.uri.fsPath;
+  const output = getOutputChannel(getConfig().revealOutput);
+
+  await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: 'Angular Code Quality: building report…',
+      cancellable: true,
+    },
+    async (progress, token) => {
+      const steps: { label: string; run: (b: BatchOptions) => Promise<number> }[] = [
+        { label: 'ESLint', run: runEslint },
+        { label: 'Stylelint', run: runStylelint },
+        { label: 'ts-prune', run: runTsPrune },
+        { label: 'depcheck', run: runDepcheck },
+      ];
+      for (const step of steps) {
+        if (token.isCancellationRequested) {
+          return;
+        }
+        progress.report({ message: step.label });
+        await step.run({ quiet: true, token });
+      }
+
+      const findings = gatherReportFindings(cwd);
+      const report = buildReport(findings, {
+        version: extensionVersion,
+        generatedAt: new Date().toISOString(),
+      });
+      const json = JSON.stringify(report, null, 2) + '\n';
+      const reportUri = vscode.Uri.file(path.join(cwd, 'angular-code-quality-report.json'));
+      try {
+        await vscode.workspace.fs.writeFile(reportUri, Buffer.from(json, 'utf8'));
+      } catch (err) {
+        const message = `Angular Code Quality: could not write the report — ${
+          err instanceof Error ? err.message : String(err)
+        }`;
+        output.appendLine(`\n${message}`);
+        vscode.window.showErrorMessage(message);
+        return;
+      }
+
+      output.appendLine(
+        `\n[Angular Code Quality] Report written to ${reportUri.fsPath} (${report.summary.total} findings).`
+      );
+      const doc = await vscode.workspace.openTextDocument(reportUri);
+      await vscode.window.showTextDocument(doc, { preview: false });
       vscode.window.showInformationMessage(
-        `Angular Code Quality — scan completed: ${pluralizeProblems(total)} (${toastParts.join(', ')}).`
+        `Angular Code Quality — report saved: ${pluralizeProblems(report.summary.total)} across ${
+          Object.keys(report.summary.byTool).length
+        } tool(s).`
       );
     }
   );
@@ -913,6 +1177,13 @@ async function runToolByKey(tool: ToolKey): Promise<void> {
       break;
     case 'stylelint':
       await runStylelint(quiet);
+      break;
+    case 'angular-template':
+      await runTemplateLint(quiet);
+      break;
+    // knip and madge are whole-project scans; run-on-save never schedules them.
+    case 'knip':
+    case 'madge':
       break;
   }
 }
@@ -1043,9 +1314,100 @@ async function removeUnusedDependency(uri: vscode.Uri, depName: string): Promise
   }
 }
 
+const REMOVE_UNUSED_EXPORT_COMMAND = 'angularCodeQualityToolkit.removeUnusedExport';
+
+/**
+ * Offers a "Remove export keyword" quick fix on each ts-prune "Unused export"
+ * diagnostic whose declaration line is a safely-demotable form. The transform
+ * itself lives (and is unit-tested) in codeActions.ts; here we only decide
+ * whether to offer it, based on the current text of the diagnostic's line.
+ */
+class UnusedExportCodeActionProvider implements vscode.CodeActionProvider {
+  static readonly providedCodeActionKinds = [vscode.CodeActionKind.QuickFix];
+
+  provideCodeActions(
+    document: vscode.TextDocument,
+    _range: vscode.Range | vscode.Selection,
+    context: vscode.CodeActionContext
+  ): vscode.CodeAction[] {
+    const actions: vscode.CodeAction[] = [];
+    for (const diagnostic of context.diagnostics) {
+      if (diagnostic.source !== DIAGNOSTIC_SOURCES['ts-prune']) {
+        continue;
+      }
+      const lineNo = diagnostic.range.start.line;
+      if (lineNo >= document.lineCount) {
+        continue;
+      }
+      const lineText = document.lineAt(lineNo).text;
+      if (removeExportKeywordFromLine(lineText) === undefined) {
+        continue;
+      }
+      const action = new vscode.CodeAction(
+        'Remove export keyword (keep as file-private)',
+        vscode.CodeActionKind.QuickFix
+      );
+      action.diagnostics = [diagnostic];
+      action.command = {
+        command: REMOVE_UNUSED_EXPORT_COMMAND,
+        title: 'Remove export keyword',
+        arguments: [document.uri, lineNo],
+      };
+      actions.push(action);
+    }
+    return actions;
+  }
+}
+
+/**
+ * Command bound to the quick fix: strip the `export` keyword from `lineNo` of
+ * the document at `uri`, then drop the ts-prune diagnostic on that line so it
+ * clears immediately. Recomputes the transform against the live text so it stays
+ * correct even if the line moved since the diagnostic was produced.
+ */
+async function removeUnusedExport(uri: vscode.Uri, lineNo: number): Promise<void> {
+  let document: vscode.TextDocument;
+  try {
+    document = await vscode.workspace.openTextDocument(uri);
+  } catch {
+    void vscode.window.showErrorMessage(`Could not open ${uri.fsPath} to remove the export.`);
+    return;
+  }
+  if (lineNo < 0 || lineNo >= document.lineCount) {
+    return;
+  }
+
+  const line = document.lineAt(lineNo);
+  const updated = removeExportKeywordFromLine(line.text);
+  if (updated === undefined) {
+    void vscode.window.showWarningMessage(
+      "Couldn't remove the export automatically — this isn't a simple declaration. Edit it by hand."
+    );
+    return;
+  }
+
+  const edit = new vscode.WorkspaceEdit();
+  edit.replace(uri, line.range, updated);
+  const applied = await vscode.workspace.applyEdit(edit);
+  if (!applied) {
+    void vscode.window.showErrorMessage(`Failed to update ${uri.fsPath}.`);
+    return;
+  }
+
+  const tsPruneCollection = collections.get('ts-prune');
+  if (tsPruneCollection) {
+    const remaining = (tsPruneCollection.get(uri) ?? []).filter(
+      (d) => d.range.start.line !== lineNo
+    );
+    tsPruneCollection.set(uri, remaining);
+  }
+}
+
 export function activate(context: vscode.ExtensionContext): void {
-  const toolKeys: ToolKey[] = ['depcheck', 'ts-prune', 'eslint', 'stylelint'];
-  for (const key of toolKeys) {
+  extensionVersion =
+    (context.extension?.packageJSON as { version?: string } | undefined)?.version ?? extensionVersion;
+
+  for (const key of ALL_TOOL_KEYS) {
     const collection = vscode.languages.createDiagnosticCollection(`${DIAGNOSTIC_SOURCE}: ${key}`);
     collections.set(key, collection);
     context.subscriptions.push(collection);
@@ -1066,6 +1428,12 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('angularCodeQualityToolkit.runTsPrune', () => runTsPrune()),
     vscode.commands.registerCommand('angularCodeQualityToolkit.runEslint', () => runEslint()),
     vscode.commands.registerCommand('angularCodeQualityToolkit.runStylelint', () => runStylelint()),
+    vscode.commands.registerCommand('angularCodeQualityToolkit.runKnip', () => runKnip()),
+    vscode.commands.registerCommand('angularCodeQualityToolkit.runTemplateLint', () =>
+      runTemplateLint()
+    ),
+    vscode.commands.registerCommand('angularCodeQualityToolkit.runMadge', () => runMadge()),
+    vscode.commands.registerCommand('angularCodeQualityToolkit.exportReport', () => exportReport()),
     vscode.commands.registerCommand('angularCodeQualityToolkit.fixEslint', () => fixEslint()),
     vscode.commands.registerCommand('angularCodeQualityToolkit.fixStylelint', () => fixStylelint()),
     vscode.commands.registerCommand('angularCodeQualityToolkit.addEslintToAngular', () =>
@@ -1082,11 +1450,21 @@ export function activate(context: vscode.ExtensionContext): void {
       REMOVE_UNUSED_DEPENDENCY_COMMAND,
       (uri: vscode.Uri, depName: string) => removeUnusedDependency(uri, depName)
     ),
+    vscode.commands.registerCommand(
+      REMOVE_UNUSED_EXPORT_COMMAND,
+      (uri: vscode.Uri, lineNo: number) => removeUnusedExport(uri, lineNo)
+    ),
     // Quick fix: "Remove unused dependency" on depcheck findings in package.json.
     vscode.languages.registerCodeActionsProvider(
       { pattern: '**/package.json' },
       new UnusedDependencyCodeActionProvider(),
       { providedCodeActionKinds: UnusedDependencyCodeActionProvider.providedCodeActionKinds }
+    ),
+    // Quick fix: "Remove export keyword" on ts-prune findings in .ts files.
+    vscode.languages.registerCodeActionsProvider(
+      { pattern: '**/*.ts' },
+      new UnusedExportCodeActionProvider(),
+      { providedCodeActionKinds: UnusedExportCodeActionProvider.providedCodeActionKinds }
     ),
     // Run-on-save: re-run the relevant tool(s) when a file is saved (opt-in).
     vscode.workspace.onDidSaveTextDocument(handleDidSave)
@@ -1096,6 +1474,11 @@ export function activate(context: vscode.ExtensionContext): void {
   const folder = vscode.workspace.workspaceFolders?.[0];
   if (folder) {
     void getActiveProject(folder.uri.fsPath);
+    // Opt-in: run all checks once on activation so the Problems panel is
+    // populated as soon as the workspace opens.
+    if (getConfig().runOnActivation) {
+      void runAllChecks({ background: true });
+    }
   }
 }
 

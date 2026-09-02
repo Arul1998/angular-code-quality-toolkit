@@ -7,6 +7,8 @@ import {
   parseTsPruneOutput,
   parseEslintOutput,
   parseStylelintOutput,
+  parseKnipOutput,
+  parseMadgeOutput,
   matchesGlob,
   partitionUnusedDependencies,
   buildDiagnosticShape,
@@ -240,6 +242,74 @@ test('DIAGNOSTIC_SOURCES gives each tool its own Problems-panel source', () => {
   assert.equal(DIAGNOSTIC_SOURCES.stylelint, 'angular-quality-stylelint');
   assert.equal(DIAGNOSTIC_SOURCES['ts-prune'], 'angular-quality-ts-prune');
   assert.equal(DIAGNOSTIC_SOURCES.depcheck, 'angular-quality-depcheck');
+  assert.equal(DIAGNOSTIC_SOURCES.knip, 'angular-quality-knip');
+  assert.equal(DIAGNOSTIC_SOURCES['angular-template'], 'angular-quality-template');
+  assert.equal(DIAGNOSTIC_SOURCES.madge, 'angular-quality-madge');
+});
+
+test('parseKnipOutput reports unused files, exports, types, deps, unlisted, and enum members', () => {
+  const raw = JSON.stringify({
+    files: ['src/app/orphan.ts'],
+    issues: [
+      {
+        file: 'src/app/foo.ts',
+        exports: [{ name: 'unusedFn', line: 10, col: 14 }],
+        types: [{ name: 'UnusedType', line: 12, col: 13 }],
+        dependencies: ['lodash'],
+        devDependencies: [{ name: 'jest', line: 1, col: 1 }],
+        unlisted: [{ name: 'rxjs' }],
+        enumMembers: { Color: [{ name: 'Red', line: 3, col: 5 }] },
+      },
+    ],
+  });
+  const issues = parseKnipOutput(raw, CWD);
+
+  const unusedFile = issues.find((i) => i.message.startsWith('Unused file'))!;
+  assert.ok(unusedFile);
+  assert.equal(unusedFile.file, path.resolve(CWD, 'src/app/orphan.ts'));
+
+  const exportIssue = issues.find((i) => i.message === 'Unused export: unusedFn')!;
+  assert.ok(exportIssue);
+  assert.equal(exportIssue.line, 9); // 1-based 10 → 0-based 9
+  assert.equal(exportIssue.column, 13);
+  assert.equal(exportIssue.file, path.resolve(CWD, 'src/app/foo.ts'));
+
+  assert.ok(issues.some((i) => i.message === 'Unused type: UnusedType'));
+  assert.ok(issues.some((i) => i.message === 'Unused dependency: lodash'));
+  assert.ok(issues.some((i) => i.message === 'Unused dependency: jest'));
+  assert.ok(issues.some((i) => i.message.startsWith('Unlisted dependency') && i.message.includes('rxjs')));
+  assert.ok(issues.some((i) => i.message === 'Unused enum member: Color.Red'));
+});
+
+test('parseKnipOutput tolerates noise around the JSON and bad input', () => {
+  const raw = 'npm warn exec\n' + JSON.stringify({ files: ['src/x.ts'], issues: [] });
+  const issues = parseKnipOutput(raw, CWD);
+  assert.equal(issues.length, 1);
+  assert.equal(parseKnipOutput('not json at all', CWD).length, 0);
+  assert.equal(parseKnipOutput('', CWD).length, 0);
+});
+
+test('parseMadgeOutput turns each cycle into one finding describing the loop', () => {
+  const raw = JSON.stringify([
+    ['src/a.ts', 'src/b.ts'],
+    ['src/c.ts', 'src/d.ts', 'src/c.ts'],
+  ]);
+  const issues = parseMadgeOutput(raw, CWD);
+  assert.equal(issues.length, 2);
+
+  assert.equal(issues[0].file, path.resolve(CWD, 'src/a.ts'));
+  // Loop is closed visually: a → b → a.
+  assert.equal(issues[0].message, 'Circular dependency: src/a.ts → src/b.ts → src/a.ts');
+
+  // madge already repeated the first file; don't double it.
+  assert.equal(issues[1].message, 'Circular dependency: src/c.ts → src/d.ts → src/c.ts');
+});
+
+test('parseMadgeOutput returns nothing for a non-cycle object or bad input', () => {
+  // A full dependency graph (object) is not a cycle list.
+  assert.equal(parseMadgeOutput(JSON.stringify({ 'a.ts': ['b.ts'] }), CWD).length, 0);
+  assert.equal(parseMadgeOutput('[]', CWD).length, 0);
+  assert.equal(parseMadgeOutput('boom', CWD).length, 0);
 });
 
 test('SEVERITY_RANK mirrors vscode.DiagnosticSeverity numbering', () => {

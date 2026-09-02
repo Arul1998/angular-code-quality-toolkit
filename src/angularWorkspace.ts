@@ -132,8 +132,23 @@ export function defaultProject(workspace: AngularWorkspace): AngularProject | un
   return workspace.projects[0];
 }
 
+/** The project's source base, derived from its sourceRoot (or root), no trailing slash. */
+function projectSourceBase(project: AngularProject): string {
+  return (project.sourceRoot || project.root || 'src').replace(/\/+$/, '');
+}
+
 /** Style globs for a project, derived from its sourceRoot (or root). */
 export function styleGlobsForProject(project: AngularProject): string[] {
-  const base = (project.sourceRoot || project.root || 'src').replace(/\/+$/, '');
+  const base = projectSourceBase(project);
   return [`${base}/**/*.scss`, `${base}/**/*.css`];
+}
+
+/** HTML template globs for a project, derived from its sourceRoot (or root). */
+export function templateGlobsForProject(project: AngularProject): string[] {
+  return [`${projectSourceBase(project)}/**/*.html`];
+}
+
+/** Directory madge should scan for circular dependencies (the project's source root). */
+export function sourceDirForProject(project: AngularProject): string {
+  return projectSourceBase(project);
 }

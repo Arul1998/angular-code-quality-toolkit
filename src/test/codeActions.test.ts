@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   dependencyNameFromMessage,
   removeDependencyFromPackageJson,
+  removeExportKeywordFromLine,
 } from '../codeActions';
 
 test('dependencyNameFromMessage extracts the package name', () => {
@@ -96,4 +97,37 @@ test('removeDependencyFromPackageJson does not match a substring package name', 
   assert.ok(result!.includes('"lodash.merge"'));
   assert.ok(!/"lodash":/.test(result!));
   assert.doesNotThrow(() => JSON.parse(result!));
+});
+
+test('removeExportKeywordFromLine demotes common declaration forms', () => {
+  assert.equal(removeExportKeywordFromLine('export function foo() {'), 'function foo() {');
+  assert.equal(removeExportKeywordFromLine('export const X = 1;'), 'const X = 1;');
+  assert.equal(removeExportKeywordFromLine('export class Foo {'), 'class Foo {');
+  assert.equal(removeExportKeywordFromLine('export interface Bar {'), 'interface Bar {');
+  assert.equal(removeExportKeywordFromLine('export type Alias = string;'), 'type Alias = string;');
+  assert.equal(removeExportKeywordFromLine('export enum E {'), 'enum E {');
+  assert.equal(removeExportKeywordFromLine('export async function go() {'), 'async function go() {');
+  assert.equal(
+    removeExportKeywordFromLine('export abstract class Base {'),
+    'abstract class Base {'
+  );
+});
+
+test('removeExportKeywordFromLine preserves leading indentation', () => {
+  assert.equal(removeExportKeywordFromLine('    export const X = 1;'), '    const X = 1;');
+  assert.equal(removeExportKeywordFromLine('\texport function f() {'), '\tfunction f() {');
+});
+
+test('removeExportKeywordFromLine refuses re-export and default forms', () => {
+  assert.equal(removeExportKeywordFromLine('export default foo;'), undefined);
+  assert.equal(removeExportKeywordFromLine('export { foo, bar };'), undefined);
+  assert.equal(removeExportKeywordFromLine('export * from "./mod";'), undefined);
+  assert.equal(removeExportKeywordFromLine('export type { Foo } from "./types";'), undefined);
+});
+
+test('removeExportKeywordFromLine ignores lines that do not start with a declaration export', () => {
+  assert.equal(removeExportKeywordFromLine('const x = 1;'), undefined);
+  assert.equal(removeExportKeywordFromLine('// export function foo() {}'), undefined);
+  assert.equal(removeExportKeywordFromLine('  return exportSomething();'), undefined);
+  assert.equal(removeExportKeywordFromLine('export something weird'), undefined);
 });
