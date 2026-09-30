@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { spawn } from 'child_process';
+import * as fs from 'fs';
 import * as path from 'path';
 import {
   ParsedIssue,
@@ -39,8 +40,34 @@ import {
   removeExportKeywordFromLine,
 } from './codeActions';
 import { ReportFinding, buildReport } from './report';
+import {
+  DEFAULT_STYLELINT_CONFIG,
+  InstallState,
+  STYLELINT_CONFIG_FILES,
+  TOOLS,
+  TOOL_KEYS,
+  CheckSelection,
+  detectInstallState,
+  getTool,
+  isToolKey,
+  missingRecommended,
+  selectChecks,
+} from './tools';
+import { RunRegistry } from './runRegistry';
+import {
+  INSTALL_TOOL_COMMAND,
+  RUN_TOOL_COMMAND,
+  ToolRunStatus,
+  ToolViewState,
+  ToolsTreeProvider,
+} from './sidebar';
 
 const DIAGNOSTIC_SOURCE = 'Angular Code Quality';
+
+/** A run that failed / was canceled / couldn't start. */
+const RUN_FAILED = -1;
+/** A run that was replaced by a newer run of the same tool (its results were discarded). */
+const RUN_SUPERSEDED = -2;
 
 /**
  * One diagnostic collection per tool so results accumulate instead of
@@ -50,6 +77,7 @@ const DIAGNOSTIC_SOURCE = 'Angular Code Quality';
  */
 const collections = new Map<ToolKey, vscode.DiagnosticCollection>();
 let outputChannel: vscode.OutputChannel | undefined;
+let extensionContext: vscode.ExtensionContext | undefined;
 /** This extension's version, captured at activation for the exported report. */
 let extensionVersion = '0.0.0';
 
@@ -58,38 +86,22 @@ const activeProjectByFolder = new Map<string, string>();
 let projectStatusBar: vscode.StatusBarItem | undefined;
 let summaryStatusBar: vscode.StatusBarItem | undefined;
 
-/**
- * Core tools shown in the status-bar summary breakdown even when their count is
- * zero (they run as part of "Run all checks"). Order is the display order.
- */
-const SUMMARY_TOOLS: { key: ToolKey; label: string }[] = [
-  { key: 'eslint', label: 'ESLint' },
-  { key: 'stylelint', label: 'stylelint' },
-  { key: 'ts-prune', label: 'ts-prune' },
-  { key: 'depcheck', label: 'depcheck' },
-];
+/** Guards against the same tool (or "Run all checks") running twice at once in a folder. */
+const runRegistry = new RunRegistry();
+/** Last run status per tool, for the sidebar. */
+const runStatus = new Map<ToolKey, ToolRunStatus>();
+/** Install state per tool for `currentFolder`, for the sidebar. */
+const installStates = new Map<ToolKey, InstallState>();
+/** The folder the sidebar and status bar describe (the last folder checks ran in). */
+let currentFolder: vscode.WorkspaceFolder | undefined;
+/** In a multi-root workspace, the folder the user last picked. */
+let pickedFolderUri: string | undefined;
+let toolsTree: ToolsTreeProvider | undefined;
+let toolsView: vscode.TreeView<ToolKey> | undefined;
 
-/**
- * Opt-in tools run only by their own command. They appear in the summary
- * breakdown only when they have findings, so the tooltip isn't cluttered with
- * "knip: 0" for tools the user never ran.
- */
-const EXTRA_SUMMARY_TOOLS: { key: ToolKey; label: string }[] = [
-  { key: 'knip', label: 'knip' },
-  { key: 'angular-template', label: 'templates' },
-  { key: 'madge', label: 'circular' },
-];
-
-/** Every tool key, in a stable order — used to create collections and clear/report. */
-const ALL_TOOL_KEYS: ToolKey[] = [
-  'depcheck',
-  'ts-prune',
-  'eslint',
-  'stylelint',
-  'knip',
-  'angular-template',
-  'madge',
-];
+/** Background (quiet) runs report a missing tool / failure once per session, not on every save. */
+const notifiedMissing = new Set<ToolKey>();
+const notifiedFailure = new Set<ToolKey>();
 
 /** True if the setting has an explicit user value (workspace/global), not just its default. */
 function isConfigExplicitlySet(section: string): boolean {
@@ -115,6 +127,8 @@ interface ToolkitConfig {
   depcheckIgnoreAngularImplicit: boolean;
   depcheckIgnores: string[];
   runOnActivation: boolean;
+  runOnSave: boolean;
+  checks: string[];
 }
 
 function getConfig(): ToolkitConfig {
@@ -130,6 +144,8 @@ function getConfig(): ToolkitConfig {
     depcheckIgnoreAngularImplicit: c.get<boolean>('depcheck.ignoreAngularImplicit', true),
     depcheckIgnores: c.get<string[]>('depcheck.ignores', []),
     runOnActivation: c.get<boolean>('runOnActivation', false),
+    runOnSave: c.get<boolean>('runOnSave', false),
+    checks: c.get<string[]>('checks', []),
   };
 }
 
@@ -154,6 +170,102 @@ async function readAngularWorkspace(cwd: string) {
   return content ? parseAngularJson(content) : null;
 }
 
+// --- Install detection -------------------------------------------------------
+
+/** Is `key`'s package installed for the project at `cwd`? Checks node_modules, no spawning. */
+function detectToolInstall(cwd: string, key: ToolKey): InstallState {
+  return detectInstallState(cwd, getTool(key).detectPackage, (p) => fs.existsSync(p));
+}
+
+function installStateFn(cwd: string): (key: ToolKey) => InstallState {
+  const cache = new Map<ToolKey, InstallState>();
+  return (key) => {
+    let state = cache.get(key);
+    if (!state) {
+      state = detectToolInstall(cwd, key);
+      cache.set(key, state);
+    }
+    return state;
+  };
+}
+
+/** What "Run all checks" (and run-on-save / export) should run in `cwd`. */
+function checkSelectionFor(cwd: string): CheckSelection {
+  return selectChecks(getConfig().checks, installStateFn(cwd));
+}
+
+/** Re-detect installed tools for the current folder and refresh the sidebar. */
+function refreshInstallStates(): void {
+  installStates.clear();
+  if (currentFolder) {
+    const state = installStateFn(currentFolder.uri.fsPath);
+    for (const key of TOOL_KEYS) {
+      installStates.set(key, state(key));
+    }
+  }
+  toolsTree?.refresh();
+}
+
+// --- Workspace folder / project --------------------------------------------
+
+function setCurrentFolder(folder: vscode.WorkspaceFolder): void {
+  if (currentFolder?.uri.toString() === folder.uri.toString()) {
+    return;
+  }
+  currentFolder = folder;
+  refreshInstallStates();
+  updateViewDescription();
+  updateSummaryStatusBar();
+  void getActiveProject(folder.uri.fsPath);
+}
+
+/**
+ * Pick the workspace folder a command acts on:
+ *  1. the only folder, in a single-folder workspace;
+ *  2. the folder of the active editor's file;
+ *  3. the folder the user picked last time;
+ *  4. quiet (background) callers: the first folder containing angular.json;
+ *     otherwise, ask.
+ */
+async function resolveFolder(options: { quiet?: boolean } = {}): Promise<vscode.WorkspaceFolder | undefined> {
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  if (folders.length === 0) {
+    if (!options.quiet) {
+      vscode.window.showErrorMessage(
+        'Angular Code Quality Toolkit: No workspace folder is open. Open your Angular project folder and try again.'
+      );
+    }
+    return undefined;
+  }
+
+  let folder: vscode.WorkspaceFolder | undefined;
+  if (folders.length === 1) {
+    folder = folders[0];
+  } else {
+    const activeUri = vscode.window.activeTextEditor?.document.uri;
+    folder =
+      (activeUri && vscode.workspace.getWorkspaceFolder(activeUri)) ||
+      folders.find((f) => f.uri.toString() === pickedFolderUri);
+    if (!folder && options.quiet) {
+      folder =
+        folders.find((f) => fs.existsSync(path.join(f.uri.fsPath, 'angular.json'))) ?? folders[0];
+    }
+    if (!folder) {
+      folder = await vscode.window.showWorkspaceFolderPick({
+        placeHolder: 'Which folder should Angular Code Quality check?',
+      });
+      if (folder) {
+        pickedFolderUri = folder.uri.toString();
+      }
+    }
+  }
+
+  if (folder) {
+    setCurrentFolder(folder);
+  }
+  return folder;
+}
+
 function updateProjectStatusBar(project?: AngularProject): void {
   if (!projectStatusBar) {
     return;
@@ -165,6 +277,25 @@ function updateProjectStatusBar(project?: AngularProject): void {
   } else {
     projectStatusBar.hide();
   }
+  updateViewDescription();
+}
+
+/** Sidebar subtitle: active Angular project, plus the folder name in multi-root workspaces. */
+function updateViewDescription(): void {
+  if (!toolsView) {
+    return;
+  }
+  const parts: string[] = [];
+  if (currentFolder) {
+    const project = activeProjectByFolder.get(currentFolder.uri.fsPath);
+    if (project) {
+      parts.push(project);
+    }
+    if ((vscode.workspace.workspaceFolders?.length ?? 0) > 1) {
+      parts.push(currentFolder.name);
+    }
+  }
+  toolsView.description = parts.join(' · ') || undefined;
 }
 
 /**
@@ -175,6 +306,7 @@ function updateProjectStatusBar(project?: AngularProject): void {
 async function getActiveProject(cwd: string, forcePick = false): Promise<AngularProject | undefined> {
   const workspace = await readAngularWorkspace(cwd);
   if (!workspace) {
+    activeProjectByFolder.delete(cwd);
     updateProjectStatusBar(undefined);
     return undefined;
   }
@@ -207,7 +339,7 @@ async function getActiveProject(cwd: string, forcePick = false): Promise<Angular
 }
 
 async function selectAngularProject(): Promise<void> {
-  const folder = getWorkspaceFolder();
+  const folder = await resolveFolder();
   if (!folder) {
     return;
   }
@@ -222,17 +354,6 @@ async function selectAngularProject(): Promise<void> {
       3000
     );
   }
-}
-
-function getWorkspaceFolder(): vscode.WorkspaceFolder | undefined {
-  const folders = vscode.workspace.workspaceFolders;
-  if (!folders || folders.length === 0) {
-    vscode.window.showErrorMessage(
-      'Angular Code Quality Toolkit: No workspace folder is open. Open your Angular project folder and try again.'
-    );
-    return undefined;
-  }
-  return folders[0];
 }
 
 function getOutputChannel(reveal: boolean): vscode.OutputChannel {
@@ -268,6 +389,11 @@ async function pathExists(uri: vscode.Uri): Promise<boolean> {
   }
 }
 
+function isInsideFolder(cwd: string, file: string): boolean {
+  const rel = path.relative(cwd, file);
+  return !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
 interface ToolResult {
   stdout: string;
   stderr: string;
@@ -276,7 +402,7 @@ interface ToolResult {
   spawnError?: Error;
 }
 
-/** Run a shell command, streaming output. Cancellable via the progress token. */
+/** Run a shell command, streaming output. Cancellable via the token. */
 function spawnCommand(
   command: string,
   cwd: string,
@@ -294,7 +420,7 @@ function spawnCommand(
     const isWindows = process.platform === 'win32';
     const child = spawn(command, { cwd, shell: true, detached: !isWindows });
 
-    const cancelSub = token.onCancellationRequested(() => {
+    const kill = (): void => {
       canceled = true;
       if (!child.pid) {
         return;
@@ -310,7 +436,11 @@ function spawnCommand(
           child.kill();
         }
       }
-    });
+    };
+    if (token.isCancellationRequested) {
+      kill();
+    }
+    const cancelSub = token.onCancellationRequested(kill);
 
     child.stdout?.on('data', (data: Buffer) => {
       const s = data.toString();
@@ -333,7 +463,10 @@ function spawnCommand(
   });
 }
 
-/** Heuristic: did the underlying CLI fail to launch (not installed / not on PATH)? */
+/**
+ * Fallback heuristic for "the CLI failed to launch" when the node_modules
+ * preflight couldn't tell (Yarn PnP, a lint script wrapping another tool, …).
+ */
 function isToolMissing(result: ToolResult): boolean {
   if (result.spawnError) {
     return true;
@@ -371,14 +504,15 @@ function toDiagnostic(
 }
 
 /**
- * Replace a tool's diagnostics wholesale. `collection.set(entries)` clears any
- * previous contents and applies the new ones atomically, so stale results for
- * that tool cannot linger and duplicates cannot accumulate across runs.
+ * Replace a tool's diagnostics for one workspace folder. Every previous entry of
+ * this tool under `cwd` is dropped (so a file that is now clean loses its stale
+ * findings), entries for other folders are kept, and the new ones are applied.
  */
 function applyDiagnostics(
   collection: vscode.DiagnosticCollection,
   toolKey: ToolKey,
-  issues: ParsedIssue[]
+  issues: ParsedIssue[],
+  cwd: string
 ): void {
   const byUri = new Map<string, vscode.Diagnostic[]>();
   for (const issue of issues) {
@@ -396,7 +530,14 @@ function applyDiagnostics(
     list.push(diagnostic);
     byUri.set(key, list);
   }
-  const entries: [vscode.Uri, vscode.Diagnostic[]][] = [];
+  const entries: [vscode.Uri, vscode.Diagnostic[] | undefined][] = [];
+  // `set(entries)` only touches the listed URIs, so explicitly clear this
+  // folder's previous entries that no longer have findings.
+  collection.forEach((uri) => {
+    if (isInsideFolder(cwd, uri.fsPath) && !byUri.has(uri.toString())) {
+      entries.push([uri, undefined]);
+    }
+  });
   for (const [uriStr, diagnostics] of byUri) {
     entries.push([vscode.Uri.parse(uriStr), diagnostics]);
   }
@@ -404,38 +545,83 @@ function applyDiagnostics(
   updateSummaryStatusBar();
 }
 
+/** Drop the given tools' diagnostics for one folder (other folders are untouched). */
+function clearFolderDiagnostics(cwd: string, keys: readonly ToolKey[]): void {
+  for (const key of keys) {
+    const collection = collections.get(key);
+    if (!collection) {
+      continue;
+    }
+    const stale: vscode.Uri[] = [];
+    collection.forEach((uri) => {
+      if (isInsideFolder(cwd, uri.fsPath)) {
+        stale.push(uri);
+      }
+    });
+    for (const uri of stale) {
+      collection.delete(uri);
+    }
+  }
+  updateSummaryStatusBar();
+}
+
+/** Findings (and how many are errors) for a tool, optionally limited to one folder. */
+function countDiagnostics(key: ToolKey, cwd?: string): { count: number; errors: number } {
+  let count = 0;
+  let errors = 0;
+  collections.get(key)?.forEach((uri, diagnostics) => {
+    if (cwd && !isInsideFolder(cwd, uri.fsPath)) {
+      return;
+    }
+    count += diagnostics.length;
+    for (const d of diagnostics) {
+      if (d.severity === vscode.DiagnosticSeverity.Error) {
+        errors++;
+      }
+    }
+  });
+  return { count, errors };
+}
+
+function toolViewState(key: ToolKey): ToolViewState {
+  const { count, errors } = countDiagnostics(key, currentFolder?.uri.fsPath);
+  return {
+    status: runStatus.get(key) ?? 'idle',
+    install: installStates.get(key) ?? 'unknown',
+    count,
+    errors,
+  };
+}
+
+function setRunStatus(key: ToolKey, status: ToolRunStatus): void {
+  runStatus.set(key, status);
+  toolsTree?.refresh();
+}
+
 /**
  * Refresh the status-bar summary from the current diagnostics across every tool.
  * Shows a grand total (error icon when any error-severity problem exists, warning
- * icon otherwise, check when clean) with a per-tool breakdown in the tooltip.
- * Called after each run; hidden by "Clear results".
+ * icon otherwise, check when clean) with a per-tool breakdown in the tooltip for
+ * every tool that has run or has findings. Hidden until something has run.
  */
 function updateSummaryStatusBar(): void {
+  toolsTree?.refresh();
   if (!summaryStatusBar) {
     return;
   }
   let errors = 0;
-  const countFor = (key: ToolKey): number => {
-    let count = 0;
-    collections.get(key)?.forEach((_uri, diagnostics) => {
-      count += diagnostics.length;
-      for (const d of diagnostics) {
-        if (d.severity === vscode.DiagnosticSeverity.Error) {
-          errors++;
-        }
-      }
-    });
-    return count;
-  };
-
-  // Core tools always appear (even at 0); the opt-in extras appear only when the
-  // user has run them and they found something.
-  const perTool = SUMMARY_TOOLS.map(({ key, label }) => ({ label, count: countFor(key) }));
-  for (const { key, label } of EXTRA_SUMMARY_TOOLS) {
-    const count = countFor(key);
-    if (count > 0) {
-      perTool.push({ label, count });
+  const perTool: { label: string; count: number }[] = [];
+  for (const tool of TOOLS) {
+    const counts = countDiagnostics(tool.key);
+    const ran = (runStatus.get(tool.key) ?? 'idle') !== 'idle';
+    if (ran || counts.count > 0) {
+      perTool.push({ label: tool.label, count: counts.count });
+      errors += counts.errors;
     }
+  }
+  if (perTool.length === 0) {
+    summaryStatusBar.hide();
+    return;
   }
 
   const { total, text, tooltip } = formatProblemSummary(perTool);
@@ -469,9 +655,16 @@ function reportSummary(
     if (!quiet) {
       // Concise completion notification; the detailed findings live in the
       // Problems panel and the editor, not in this toast.
-      vscode.window.showInformationMessage(
-        `Code quality scan completed: ${pluralizeProblems(count)} found (${label}).`
-      );
+      void vscode.window
+        .showInformationMessage(
+          `Code quality scan completed: ${pluralizeProblems(count)} found (${label}).`,
+          'Show problems'
+        )
+        .then((choice) => {
+          if (choice) {
+            void vscode.commands.executeCommand('workbench.actions.view.problems');
+          }
+        });
     }
   } else {
     output.appendLine(`\n[Angular Code Quality] ${label}: no ${noun}s found. ✓`);
@@ -481,10 +674,60 @@ function reportSummary(
   }
 }
 
-interface RunOptions {
+/** Tell the user a tool isn't installed, with a one-click Install. Background runs say it once per session. */
+function notifyToolMissing(key: ToolKey, folder: vscode.WorkspaceFolder, quiet: boolean): void {
+  if (quiet && notifiedMissing.has(key)) {
+    return;
+  }
+  notifiedMissing.add(key);
+  const tool = getTool(key);
+  void vscode.window
+    .showErrorMessage(
+      `Angular Code Quality — ${tool.label} isn't installed in this project.`,
+      'Install',
+      'Show output'
+    )
+    .then((choice) => {
+      if (choice === 'Install') {
+        void installTools([key], folder);
+      } else if (choice === 'Show output') {
+        getOutputChannel(true);
+      }
+    });
+}
+
+/** A run exited non-zero with nothing parseable. Background runs say it once until the tool succeeds again. */
+function notifyToolFailed(key: ToolKey, message: string, quiet: boolean): void {
+  if (quiet && notifiedFailure.has(key)) {
+    return;
+  }
+  notifiedFailure.add(key);
+  void vscode.window
+    .showWarningMessage(message, 'Show output', 'Open settings')
+    .then((choice) => {
+      if (choice === 'Show output') {
+        getOutputChannel(true);
+      } else if (choice === 'Open settings') {
+        void openSettings();
+      }
+    });
+}
+
+/** Everything a tool runner needs: which folder, and how to present the run. */
+interface RunContext {
+  folder: vscode.WorkspaceFolder;
+  /**
+   * When set, the tool run does not show its own progress toast or success
+   * notification (used by "Run all checks" / run-on-save, which own their own
+   * presentation). The provided token drives cancellation.
+   */
+  quiet?: boolean;
+  token?: vscode.CancellationToken;
+}
+
+interface RunOptions extends RunContext {
   label: string;
   command: string;
-  cwd: string;
   toolKey: ToolKey;
   noun: string;
   parse: (raw: string, result: ToolResult) => ParsedIssue[];
@@ -492,85 +735,122 @@ interface RunOptions {
   installHint?: string;
   /** Optional inspection of raw output for extra, tool-specific notifications. */
   onRaw?: (raw: string, result: ToolResult) => void;
-  /**
-   * When set, the tool run does not show its own progress toast or success
-   * notification (used by "Run all checks", which owns one shared progress and a
-   * single final summary). The provided token drives cancellation.
-   */
-  quiet?: boolean;
-  token?: vscode.CancellationToken;
   /** Package manager used to build the command (logged for transparency). */
   packageManager?: PackageManager;
 }
 
-/** Shared execution + reporting pipeline for a single tool run. Returns issue count (-1 if aborted). */
+/**
+ * Shared execution + reporting pipeline for a single tool run. Returns the issue
+ * count, RUN_FAILED, or RUN_SUPERSEDED (a newer run of the same tool in the same
+ * folder started, so this one was canceled and its results discarded).
+ */
 async function runTool(options: RunOptions): Promise<number> {
-  const { revealOutput } = getConfig();
-  const output = getOutputChannel(revealOutput);
+  const { folder, toolKey } = options;
+  const cwd = folder.uri.fsPath;
+  const quiet = options.quiet ?? false;
+  const output = getOutputChannel(getConfig().revealOutput);
+  const previousStatus = runStatus.get(toolKey) ?? 'idle';
+
+  // Preflight: if node_modules clearly lacks the tool, say so without spawning
+  // (fast, and doesn't depend on the OS language of shell error messages).
+  if (detectToolInstall(cwd, toolKey) === 'missing') {
+    const hint = options.installHint ? ` ${options.installHint}` : '';
+    output.appendLine(`\n[Angular Code Quality] ${options.label} is not installed in ${cwd}.${hint}`);
+    if (folder === currentFolder) {
+      installStates.set(toolKey, 'missing');
+    }
+    setRunStatus(toolKey, 'idle');
+    notifyToolMissing(toolKey, folder, quiet);
+    return RUN_FAILED;
+  }
+
   output.appendLine(`\n> ${options.command}`);
   const pmNote = options.packageManager ? ` (package manager: ${options.packageManager})` : '';
-  output.appendLine(`Running in ${options.cwd}${pmNote} ...`);
+  output.appendLine(`Running in ${cwd}${pmNote} ...`);
 
-  const result =
-    options.quiet && options.token
-      ? await spawnCommand(options.command, options.cwd, output, options.token)
+  const cts = new vscode.CancellationTokenSource();
+  const externalSub = options.token?.onCancellationRequested(() => cts.cancel());
+  if (options.token?.isCancellationRequested) {
+    cts.cancel();
+  }
+  const handle = runRegistry.begin(`${cwd}|${toolKey}`, () => cts.cancel());
+  setRunStatus(toolKey, 'running');
+
+  try {
+    const result = quiet
+      ? await spawnCommand(options.command, cwd, output, cts.token)
       : await vscode.window.withProgress(
           {
             location: vscode.ProgressLocation.Notification,
             title: `Angular Code Quality: ${options.label}…`,
             cancellable: true,
           },
-          (_progress, token) => spawnCommand(options.command, options.cwd, output, token)
+          (_progress, token) => {
+            const sub = token.onCancellationRequested(() => cts.cancel());
+            return spawnCommand(options.command, cwd, output, cts.token).finally(() => sub.dispose());
+          }
         );
 
-  if (result.canceled) {
-    output.appendLine('\n[Angular Code Quality] Canceled.');
-    return -1;
+    if (!handle.isCurrent()) {
+      // A newer run of this tool owns the status and the Problems panel now.
+      output.appendLine(`\n[Angular Code Quality] ${options.label}: restarted by a newer run.`);
+      return RUN_SUPERSEDED;
+    }
+
+    if (result.canceled) {
+      output.appendLine('\n[Angular Code Quality] Canceled.');
+      setRunStatus(toolKey, previousStatus === 'running' ? 'idle' : previousStatus);
+      return RUN_FAILED;
+    }
+
+    if (isToolMissing(result)) {
+      const hint = options.installHint
+        ? ` ${options.installHint}`
+        : ' Make sure the required tool is installed and available on your PATH.';
+      output.appendLine(`\n[Angular Code Quality] ${options.label} could not run.${hint}`);
+      setRunStatus(toolKey, 'failed');
+      notifyToolMissing(toolKey, folder, quiet);
+      return RUN_FAILED;
+    }
+
+    const raw = result.stdout.trim() || result.stderr.trim();
+    options.onRaw?.(raw, result);
+
+    const issues = options.parse(raw, result);
+
+    // A non-zero exit with nothing parseable almost always means the command
+    // itself errored (e.g. `ng lint` rejecting `--format json`, a bad config, or a
+    // crash) rather than a clean project. Never report that as "clean ✓", and
+    // keep the previous findings rather than wiping them.
+    if (issues.length === 0 && result.code !== 0 && result.code !== null) {
+      const message =
+        `Angular Code Quality — ${options.label} exited with code ${result.code} but produced no recognizable results. ` +
+        'It likely failed — see the output channel.';
+      output.appendLine(`\n[Angular Code Quality] ${message}`);
+      setRunStatus(toolKey, 'failed');
+      notifyToolFailed(toolKey, message, quiet);
+      return RUN_FAILED;
+    }
+
+    applyDiagnostics(collections.get(toolKey)!, toolKey, issues, cwd);
+    notifiedFailure.delete(toolKey);
+    notifiedMissing.delete(toolKey);
+    if (folder === currentFolder) {
+      installStates.set(toolKey, 'installed');
+    }
+    setRunStatus(toolKey, 'done');
+    reportSummary(options.label, options.noun, issues.length, output, quiet);
+    return issues.length;
+  } finally {
+    handle.end();
+    externalSub?.dispose();
+    cts.dispose();
+    updateSummaryStatusBar();
   }
-
-  if (isToolMissing(result)) {
-    const hint = options.installHint
-      ? ` ${options.installHint}`
-      : ' Make sure the required tool is installed and available on your PATH.';
-    output.appendLine(`\n[Angular Code Quality] ${options.label} could not run.${hint}`);
-    vscode.window.showErrorMessage(`Angular Code Quality — ${options.label} could not run.${hint}`);
-    return -1;
-  }
-
-  const raw = result.stdout.trim() || result.stderr.trim();
-  options.onRaw?.(raw, result);
-
-  const issues = options.parse(raw, result);
-  const collection = collections.get(options.toolKey)!;
-  applyDiagnostics(collection, options.toolKey, issues);
-
-  // A non-zero exit with nothing parseable almost always means the command
-  // itself errored (e.g. `ng lint` rejecting `--format json`, a bad config, or a
-  // crash) rather than a clean project. Never report that as "clean ✓".
-  if (issues.length === 0 && result.code !== 0 && result.code !== null) {
-    const message =
-      `Angular Code Quality — ${options.label} exited with code ${result.code} but produced no recognizable results. ` +
-      'It likely failed — see the output channel.';
-    output.appendLine(`\n[Angular Code Quality] ${message}`);
-    vscode.window.showWarningMessage(message);
-    return -1;
-  }
-
-  reportSummary(options.label, options.noun, issues.length, output, options.quiet ?? false);
-  return issues.length;
 }
 
-interface BatchOptions {
-  quiet?: boolean;
-  token?: vscode.CancellationToken;
-}
-
-async function runDepcheck(batch: BatchOptions = {}): Promise<number> {
-  const folder = getWorkspaceFolder();
-  if (!folder) {
-    return -1;
-  }
-  const cwd = folder.uri.fsPath;
+async function runDepcheck(ctx: RunContext): Promise<number> {
+  const cwd = ctx.folder.uri.fsPath;
   const pm = await resolvePackageManager(cwd);
   const packageJsonPath = path.join(cwd, 'package.json');
   const packageJsonContent = await readFileText(vscode.Uri.file(packageJsonPath));
@@ -586,24 +866,19 @@ async function runDepcheck(batch: BatchOptions = {}): Promise<number> {
   ];
 
   return runTool({
+    ...ctx,
     label: 'depcheck',
     command: `${binRunner(pm)} depcheck --json`,
-    cwd,
     toolKey: 'depcheck',
     noun: 'dependency issue',
     packageManager: pm,
     installHint: `Install it with: ${addDevCommand(pm, 'depcheck')}`,
     parse: (raw) => parseDepcheckOutput(raw, cwd, packageJsonPath, packageJsonContent, ignorePatterns),
-    ...batch,
   });
 }
 
-async function runTsPrune(batch: BatchOptions = {}): Promise<number> {
-  const folder = getWorkspaceFolder();
-  if (!folder) {
-    return -1;
-  }
-  const cwd = folder.uri.fsPath;
+async function runTsPrune(ctx: RunContext): Promise<number> {
+  const cwd = ctx.folder.uri.fsPath;
   const pm = await resolvePackageManager(cwd);
   const project = await getActiveProject(cwd);
 
@@ -623,7 +898,9 @@ async function runTsPrune(batch: BatchOptions = {}): Promise<number> {
       'Running ts-prune without a project file (results may be less precise). ' +
       'You can set "angularCodeQuality.tsPrune.tsconfigPath" in Settings.';
     getOutputChannel(getConfig().revealOutput).appendLine(`\n${message}`);
-    vscode.window.showWarningMessage(message);
+    if (!ctx.quiet) {
+      vscode.window.showWarningMessage(message);
+    }
   }
 
   const command = exists
@@ -631,29 +908,25 @@ async function runTsPrune(batch: BatchOptions = {}): Promise<number> {
     : `${binRunner(pm)} ts-prune`;
 
   return runTool({
+    ...ctx,
     label: 'ts-prune',
     command,
-    cwd,
     toolKey: 'ts-prune',
     noun: 'unused export',
     packageManager: pm,
     installHint: `Install it with: ${addDevCommand(pm, 'ts-prune')}`,
     parse: (raw) => parseTsPruneOutput(raw, cwd),
-    ...batch,
   });
 }
 
-async function runEslint(batch: BatchOptions = {}, fix = false): Promise<number> {
-  const folder = getWorkspaceFolder();
-  if (!folder) {
-    return -1;
-  }
-  const cwd = folder.uri.fsPath;
+async function runEslint(ctx: RunContext, fix = false): Promise<number> {
+  const cwd = ctx.folder.uri.fsPath;
   const pm = await resolvePackageManager(cwd);
   const { eslintUseJson, revealOutput } = getConfig();
   const output = getOutputChannel(revealOutput);
   const label = fix ? 'ESLint (--fix)' : 'ESLint';
   const fixFlag = fix ? ' --fix' : '';
+  const json = eslintUseJson ? ' --format json' : '';
 
   const tslintOnRaw = (raw: string): void => {
     if (raw.includes('tslint') || raw.includes('Cannot find builder')) {
@@ -670,27 +943,28 @@ async function runEslint(batch: BatchOptions = {}, fix = false): Promise<number>
     }
   };
 
+  const eslintRun = (command: string): Promise<number> =>
+    runTool({
+      ...ctx,
+      label,
+      command,
+      toolKey: 'eslint',
+      noun: 'lint issue',
+      packageManager: pm,
+      installHint: 'Ensure ESLint is installed (run "Add ESLint to Angular project").',
+      parse: (raw) => parseEslintOutput(raw, cwd),
+      onRaw: tslintOnRaw,
+    });
+
   // In a multi-project workspace, lint the *selected* project via the Angular CLI
   // so the picker actually scopes ESLint. The root "lint" script lints everything.
   const workspace = await readAngularWorkspace(cwd);
   const project = await getActiveProject(cwd);
   if (workspace && workspace.projects.length > 1 && project?.hasLintTarget) {
-    const json = eslintUseJson ? ' --format json' : '';
     output.appendLine(
       `\n${fix ? 'Fixing' : 'Linting'} Angular project "${project.name}" (ng lint ${project.name}${fixFlag}).`
     );
-    return runTool({
-      label,
-      command: `${binRunner(pm)} ng lint ${project.name}${fixFlag}${json}`,
-      cwd,
-      toolKey: 'eslint',
-      noun: 'lint issue',
-      packageManager: pm,
-      installHint: 'Ensure @angular/cli and ESLint are installed in this workspace.',
-      parse: (raw) => parseEslintOutput(raw, cwd),
-      ...batch,
-      onRaw: tslintOnRaw,
-    });
+    return eslintRun(`${binRunner(pm)} ng lint ${project.name}${fixFlag}${json}`);
   }
 
   const contents = await readFileText(vscode.Uri.file(path.join(cwd, 'package.json')));
@@ -699,7 +973,7 @@ async function runEslint(batch: BatchOptions = {}, fix = false): Promise<number>
       'Angular Code Quality: package.json was not found in the workspace root. ESLint is typically run via an npm "lint" script.';
     output.appendLine(`\n${message}`);
     vscode.window.showErrorMessage(message);
-    return -1;
+    return RUN_FAILED;
   }
 
   let pkg: { scripts?: Record<string, string> };
@@ -709,43 +983,41 @@ async function runEslint(batch: BatchOptions = {}, fix = false): Promise<number>
     const message = 'Angular Code Quality: Could not parse package.json. Check that it is valid JSON.';
     output.appendLine(`\n${message}`);
     vscode.window.showErrorMessage(message);
-    return -1;
+    return RUN_FAILED;
   }
 
-  if (!pkg.scripts || !pkg.scripts.lint) {
-    const message =
-      'Angular Code Quality: No "lint" script found in package.json. Add one (e.g. "lint": "ng lint"), or run "Add ESLint to Angular project".';
-    output.appendLine(`\n${message}`);
-    const choice = await vscode.window.showWarningMessage(message, 'Add ESLint to Angular project');
-    if (choice) {
-      void addEslintToAngular();
-    }
-    return -1;
+  if (pkg.scripts?.lint) {
+    const lintArgs = [fixFlag.trim(), json.trim()].filter(Boolean).join(' ');
+    return eslintRun(scriptCommand(pm, 'lint', lintArgs || undefined));
   }
 
-  const lintArgs = [fixFlag.trim(), eslintUseJson ? '--format json' : ''].filter(Boolean).join(' ');
-  const command = scriptCommand(pm, 'lint', lintArgs || undefined);
+  // No "lint" script (the default for `ng new` projects): use the Angular CLI's
+  // lint target directly when angular.json has one.
+  if (workspace?.projects.some((p) => p.hasLintTarget)) {
+    output.appendLine(`\nNo "lint" script in package.json — using ng lint${fixFlag}.`);
+    return eslintRun(`${binRunner(pm)} ng lint${fixFlag}${json}`);
+  }
 
-  return runTool({
-    label,
-    command,
-    cwd,
-    toolKey: 'eslint',
-    noun: 'lint issue',
-    packageManager: pm,
-    installHint: 'Ensure ESLint is installed and your "lint" script works (try running it in a terminal).',
-    parse: (raw) => parseEslintOutput(raw, cwd),
-    ...batch,
-    onRaw: tslintOnRaw,
-  });
+  const message =
+    'Angular Code Quality: ESLint isn\'t set up — there is no "lint" script in package.json and no lint target in angular.json.';
+  output.appendLine(`\n${message}`);
+  setRunStatus('eslint', 'failed');
+  if (!ctx.quiet || !notifiedFailure.has('eslint')) {
+    notifiedFailure.add('eslint');
+    // Not awaited: "Run all checks" must not stall until the toast is dismissed.
+    void vscode.window
+      .showWarningMessage(message, 'Add ESLint to Angular project')
+      .then((choice) => {
+        if (choice) {
+          void addEslintToAngular();
+        }
+      });
+  }
+  return RUN_FAILED;
 }
 
-async function runStylelint(batch: BatchOptions = {}, fix = false): Promise<number> {
-  const folder = getWorkspaceFolder();
-  if (!folder) {
-    return -1;
-  }
-  const cwd = folder.uri.fsPath;
+async function runStylelint(ctx: RunContext, fix = false): Promise<number> {
+  const cwd = ctx.folder.uri.fsPath;
   const pm = await resolvePackageManager(cwd);
   const project = await getActiveProject(cwd);
   const { stylelintUseJson } = getConfig();
@@ -793,15 +1065,14 @@ async function runStylelint(batch: BatchOptions = {}, fix = false): Promise<numb
   }
 
   return runTool({
+    ...ctx,
     label,
     command,
-    cwd,
     toolKey: 'stylelint',
     noun: 'style issue',
     packageManager: pm,
     installHint: `Install it with: ${addDevCommand(pm, 'stylelint stylelint-config-standard-scss')}`,
     parse: (raw) => parseStylelintOutput(raw, cwd),
-    ...batch,
   });
 }
 
@@ -810,24 +1081,19 @@ async function runStylelint(batch: BatchOptions = {}, fix = false): Promise<numb
  * whole project. Reports unused files, exports, types, enum members, and
  * dependencies in one pass, into its own collection.
  */
-async function runKnip(batch: BatchOptions = {}): Promise<number> {
-  const folder = getWorkspaceFolder();
-  if (!folder) {
-    return -1;
-  }
-  const cwd = folder.uri.fsPath;
+async function runKnip(ctx: RunContext): Promise<number> {
+  const cwd = ctx.folder.uri.fsPath;
   const pm = await resolvePackageManager(cwd);
 
   return runTool({
+    ...ctx,
     label: 'knip',
     command: `${binRunner(pm)} knip --reporter json --no-exit-code`,
-    cwd,
     toolKey: 'knip',
     noun: 'issue',
     packageManager: pm,
     installHint: `Install it with: ${addDevCommand(pm, 'knip')}`,
     parse: (raw) => parseKnipOutput(raw, cwd),
-    ...batch,
   });
 }
 
@@ -838,12 +1104,8 @@ async function runKnip(batch: BatchOptions = {}): Promise<number> {
  * "Run ESLint". Scopes globs to the active project's source root unless the user
  * set `angularCodeQuality.template.globs` explicitly.
  */
-async function runTemplateLint(batch: BatchOptions = {}): Promise<number> {
-  const folder = getWorkspaceFolder();
-  if (!folder) {
-    return -1;
-  }
-  const cwd = folder.uri.fsPath;
+async function runTemplateLint(ctx: RunContext): Promise<number> {
+  const cwd = ctx.folder.uri.fsPath;
   const pm = await resolvePackageManager(cwd);
   const project = await getActiveProject(cwd);
   const { eslintUseJson } = getConfig();
@@ -860,15 +1122,14 @@ async function runTemplateLint(batch: BatchOptions = {}): Promise<number> {
   const command = `${binRunner(pm)} eslint ${globs} --no-error-on-unmatched-pattern${json}`;
 
   return runTool({
+    ...ctx,
     label: 'Angular templates',
     command,
-    cwd,
     toolKey: 'angular-template',
     noun: 'template issue',
     packageManager: pm,
     installHint: `Install it with: ${addDevCommand(pm, '@angular-eslint/eslint-plugin-template @angular-eslint/template-parser')}`,
     parse: (raw) => parseEslintOutput(raw, cwd),
-    ...batch,
   });
 }
 
@@ -876,27 +1137,41 @@ async function runTemplateLint(batch: BatchOptions = {}): Promise<number> {
  * Run madge to find circular dependencies in the project's TypeScript sources.
  * Each cycle is reported as one finding on its first file, describing the loop.
  */
-async function runMadge(batch: BatchOptions = {}): Promise<number> {
-  const folder = getWorkspaceFolder();
-  if (!folder) {
-    return -1;
-  }
-  const cwd = folder.uri.fsPath;
+async function runMadge(ctx: RunContext): Promise<number> {
+  const cwd = ctx.folder.uri.fsPath;
   const pm = await resolvePackageManager(cwd);
   const project = await getActiveProject(cwd);
   const sourceDir = project ? sourceDirForProject(project) : 'src';
 
   return runTool({
+    ...ctx,
     label: 'madge (circular deps)',
     command: `${binRunner(pm)} madge --circular --extensions ts --json ${shellArg(sourceDir)}`,
-    cwd,
     toolKey: 'madge',
     noun: 'circular dependency',
     packageManager: pm,
     installHint: `Install it with: ${addDevCommand(pm, 'madge')}`,
     parse: (raw) => parseMadgeOutput(raw, cwd),
-    ...batch,
   });
+}
+
+/** The runner for each tool. Adding a tool = an entry in tools.ts + a runner here. */
+const TOOL_RUNNERS: Record<ToolKey, (ctx: RunContext) => Promise<number>> = {
+  eslint: (ctx) => runEslint(ctx),
+  stylelint: (ctx) => runStylelint(ctx),
+  knip: runKnip,
+  'angular-template': runTemplateLint,
+  madge: runMadge,
+  'ts-prune': runTsPrune,
+  depcheck: runDepcheck,
+};
+
+/** Command entry point: run one tool in the resolved folder (with its own progress + toast). */
+async function runSingleTool(key: ToolKey): Promise<void> {
+  const folder = await resolveFolder();
+  if (folder) {
+    await TOOL_RUNNERS[key]({ folder });
+  }
 }
 
 /**
@@ -905,18 +1180,24 @@ async function runMadge(batch: BatchOptions = {}): Promise<number> {
  * files are saved first so the tools don't overwrite unsaved editor changes on
  * disk; VS Code reloads the (now clean) files after they're fixed.
  */
-async function fixEslint(): Promise<void> {
+async function fixTool(key: ToolKey): Promise<void> {
+  if (key !== 'eslint' && key !== 'stylelint') {
+    return;
+  }
+  const folder = await resolveFolder();
+  if (!folder) {
+    return;
+  }
   await vscode.workspace.saveAll(false);
-  await runEslint({}, true);
-}
-
-async function fixStylelint(): Promise<void> {
-  await vscode.workspace.saveAll(false);
-  await runStylelint({}, true);
+  if (key === 'eslint') {
+    await runEslint({ folder }, true);
+  } else {
+    await runStylelint({ folder }, true);
+  }
 }
 
 async function addEslintToAngular(): Promise<void> {
-  const folder = getWorkspaceFolder();
+  const folder = await resolveFolder();
   if (!folder) {
     return;
   }
@@ -934,6 +1215,173 @@ async function addEslintToAngular(): Promise<void> {
   );
 }
 
+// --- Setup: detect and install tools ------------------------------------------
+
+const INSTALL_TERMINAL_NAME = 'Angular Code Quality: Install tools';
+
+async function hasStylelintConfig(cwd: string): Promise<boolean> {
+  for (const name of STYLELINT_CONFIG_FILES) {
+    if (await pathExists(vscode.Uri.file(path.join(cwd, name)))) {
+      return true;
+    }
+  }
+  const pkgText = await readFileText(vscode.Uri.file(path.join(cwd, 'package.json')));
+  try {
+    return Boolean(pkgText && (JSON.parse(pkgText) as { stylelint?: unknown }).stylelint);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Install the given tools in a terminal (so the user sees progress and can answer
+ * prompts). Plain tools go in one dev-install; ESLint uses `ng add
+ * @angular-eslint/schematics`, which also wires up the lint target and config.
+ * When stylelint is installed into a project without a stylelint config, a
+ * minimal `.stylelintrc.json` is written so the first run works.
+ */
+async function installTools(keys: ToolKey[], folderArg?: vscode.WorkspaceFolder): Promise<void> {
+  const folder = folderArg ?? (await resolveFolder());
+  if (!folder || keys.length === 0) {
+    return;
+  }
+  const cwd = folder.uri.fsPath;
+  const pm = await resolvePackageManager(cwd);
+
+  const plain = keys.filter((k) => !getTool(k).installViaNgAdd);
+  const packages = [...new Set(plain.flatMap((k) => getTool(k).packages))];
+  const commands: string[] = [];
+  if (packages.length > 0) {
+    commands.push(addDevCommand(pm, packages.join(' ')));
+  }
+  for (const key of keys.filter((k) => getTool(k).installViaNgAdd)) {
+    commands.push(`${binRunner(pm)} ng add ${getTool(key).packages.join(' ')}`);
+  }
+
+  let wroteConfig = false;
+  if (keys.includes('stylelint') && !(await hasStylelintConfig(cwd))) {
+    try {
+      await vscode.workspace.fs.writeFile(
+        vscode.Uri.file(path.join(cwd, '.stylelintrc.json')),
+        Buffer.from(DEFAULT_STYLELINT_CONFIG, 'utf8')
+      );
+      wroteConfig = true;
+    } catch {
+      // Not fatal: stylelint will report the missing config on its first run.
+    }
+  }
+
+  vscode.window.terminals.find((t) => t.name === INSTALL_TERMINAL_NAME)?.dispose();
+  const terminal = vscode.window.createTerminal({ name: INSTALL_TERMINAL_NAME, cwd });
+  terminal.show();
+  // Separate lines rather than `&&`, which Windows PowerShell 5.1 doesn't support;
+  // the shell runs them one after another.
+  for (const command of commands) {
+    terminal.sendText(command);
+  }
+
+  const names = keys.map((k) => getTool(k).label).join(', ');
+  vscode.window.showInformationMessage(
+    `Angular Code Quality: installing ${names} in the terminal` +
+      (wroteConfig ? ' (and created .stylelintrc.json)' : '') +
+      '. The Code Quality view updates when it finishes.'
+  );
+}
+
+/**
+ * "Install / check tools…": show which tools are missing in this project and
+ * install the ones the user picks (recommended ones are pre-selected).
+ */
+async function setupTools(): Promise<void> {
+  const folder = await resolveFolder();
+  if (!folder) {
+    return;
+  }
+  const state = installStateFn(folder.uri.fsPath);
+  const missing = TOOLS.filter((t) => state(t.key) === 'missing');
+
+  if (missing.length === 0) {
+    const allUnknown = TOOLS.every((t) => state(t.key) === 'unknown');
+    vscode.window.showInformationMessage(
+      allUnknown
+        ? 'Angular Code Quality: couldn\'t check which tools are installed (no node_modules, or Yarn Plug\'n\'Play). Run your package manager\'s install first.'
+        : 'Angular Code Quality: every supported tool is installed ✓'
+    );
+    return;
+  }
+
+  const items = missing.map((t) => ({
+    label: t.label,
+    description: t.recommended ? 'recommended' : t.legacy ? 'legacy' : 'optional',
+    detail: `${t.description} — ${t.installViaNgAdd ? 'ng add ' : ''}${t.packages.join(' ')}`,
+    picked: Boolean(t.recommended),
+    key: t.key,
+  }));
+  const picked = await vscode.window.showQuickPick(items, {
+    canPickMany: true,
+    title: 'Angular Code Quality: install tools',
+    placeHolder: 'Pick the tools to install as devDependencies (recommended ones are pre-selected)',
+  });
+  if (picked && picked.length > 0) {
+    await installTools(
+      picked.map((p) => p.key),
+      folder
+    );
+  }
+}
+
+const SETUP_PROMPT_SHOWN_KEY = 'angularCodeQuality.setupPromptShown';
+const SETUP_PROMPT_NEVER_KEY = 'angularCodeQuality.setupPromptNever';
+
+/**
+ * First open of an Angular workspace: if recommended tools are missing, offer to
+ * install them. Shown at most once per workspace, and never again after "Don't
+ * show again".
+ */
+async function maybePromptSetup(folder: vscode.WorkspaceFolder): Promise<void> {
+  const context = extensionContext;
+  if (!context) {
+    return;
+  }
+  if (
+    context.globalState.get<boolean>(SETUP_PROMPT_NEVER_KEY) ||
+    context.workspaceState.get<boolean>(SETUP_PROMPT_SHOWN_KEY)
+  ) {
+    return;
+  }
+  if (!(await pathExists(vscode.Uri.file(path.join(folder.uri.fsPath, 'angular.json'))))) {
+    return;
+  }
+  const missing = missingRecommended(installStateFn(folder.uri.fsPath));
+  if (missing.length === 0) {
+    return;
+  }
+  await context.workspaceState.update(SETUP_PROMPT_SHOWN_KEY, true);
+
+  const names = missing.map((k) => getTool(k).label).join(', ');
+  const choice = await vscode.window.showInformationMessage(
+    `Angular Code Quality: ${names} ${missing.length === 1 ? "isn't" : "aren't"} installed in this project. Install to get the full set of checks?`,
+    'Install…',
+    "Don't show again"
+  );
+  if (choice === 'Install…') {
+    await setupTools();
+  } else if (choice === "Don't show again") {
+    await context.globalState.update(SETUP_PROMPT_NEVER_KEY, true);
+  }
+}
+
+async function openSettings(): Promise<void> {
+  await vscode.commands.executeCommand('workbench.action.openSettings', 'angularCodeQuality');
+}
+
+async function openWalkthrough(): Promise<void> {
+  const id = extensionContext?.extension.id ?? 'arul1998.angular-code-quality-toolkit';
+  await vscode.commands.executeCommand('workbench.action.openWalkthrough', `${id}#gettingStarted`, false);
+}
+
+// --- Run all checks / export -------------------------------------------------
+
 interface RunAllOptions {
   /**
    * Quieter presentation for the run-on-activation path: a status-bar progress
@@ -943,17 +1391,81 @@ interface RunAllOptions {
   background?: boolean;
 }
 
+interface ChecksRun {
+  selection: CheckSelection;
+  counts: Map<ToolKey, number>;
+  /** False when canceled by the user or superseded by a newer "Run all checks". */
+  completed: boolean;
+  /** True when a newer "Run all checks" for the same folder replaced this one. */
+  superseded: boolean;
+}
+
+/**
+ * Run the selected checks (see `selectChecks`) one after another in `folder`,
+ * starting from a clean slate for those tools. A newer call for the same folder
+ * cancels this one.
+ */
+async function runSelectedChecks(
+  folder: vscode.WorkspaceFolder,
+  progress: vscode.Progress<{ message?: string }>,
+  userToken: vscode.CancellationToken
+): Promise<ChecksRun> {
+  const cwd = folder.uri.fsPath;
+  const selection = checkSelectionFor(cwd);
+  const counts = new Map<ToolKey, number>();
+
+  const cts = new vscode.CancellationTokenSource();
+  const userSub = userToken.onCancellationRequested(() => cts.cancel());
+  const handle = runRegistry.begin(`${cwd}|*all`, () => cts.cancel());
+  try {
+    // Start from a clean slate so results from a previous run — including tools
+    // that fail to launch this time and therefore never re-populate their own
+    // collection — cannot linger in the Problems panel.
+    clearFolderDiagnostics(cwd, selection.run);
+    for (const key of selection.run) {
+      if (cts.token.isCancellationRequested) {
+        break;
+      }
+      progress.report({ message: getTool(key).label });
+      counts.set(key, await TOOL_RUNNERS[key]({ folder, quiet: true, token: cts.token }));
+    }
+    const superseded = !handle.isCurrent();
+    return { selection, counts, completed: !cts.token.isCancellationRequested, superseded };
+  } finally {
+    handle.end();
+    userSub.dispose();
+    cts.dispose();
+  }
+}
+
+/** False (after telling the user, with an Install button) when no tool would run in `folder`. */
+async function ensureChecksAvailable(folder: vscode.WorkspaceFolder, background: boolean): Promise<boolean> {
+  if (checkSelectionFor(folder.uri.fsPath).run.length > 0) {
+    return true;
+  }
+  const message = 'Angular Code Quality: no code-quality tools are installed in this project yet.';
+  getOutputChannel(false).appendLine(`\n${message}`);
+  if (background) {
+    vscode.window.setStatusBarMessage(message, 5000);
+  } else {
+    void vscode.window.showInformationMessage(message, 'Install tools…').then((choice) => {
+      if (choice) {
+        void setupTools();
+      }
+    });
+  }
+  return false;
+}
+
 async function runAllChecks(opts: RunAllOptions = {}): Promise<void> {
-  if (!getWorkspaceFolder()) {
+  const folder = await resolveFolder({ quiet: opts.background });
+  if (!folder) {
     return;
   }
-
   const output = getOutputChannel(getConfig().revealOutput);
-
-  // Start from a clean slate so results from a previous run — including tools
-  // that fail to launch this time and therefore never re-populate their own
-  // collection — cannot linger in the Problems panel.
-  clearDiagnosticCollections();
+  if (!(await ensureChecksAvailable(folder, opts.background ?? false))) {
+    return;
+  }
   output.appendLine('\n[Angular Code Quality] Running all checks (cleared previous results)…');
 
   await vscode.window.withProgress(
@@ -965,24 +1477,13 @@ async function runAllChecks(opts: RunAllOptions = {}): Promise<void> {
       cancellable: true,
     },
     async (progress, token) => {
-      const steps: { label: string; run: (b: BatchOptions) => Promise<number> }[] = [
-        { label: 'ESLint', run: runEslint },
-        { label: 'Stylelint', run: runStylelint },
-        { label: 'ts-prune', run: runTsPrune },
-        { label: 'depcheck', run: runDepcheck },
-      ];
+      const run = await runSelectedChecks(folder, progress, token);
 
-      const counts = new Map<string, number>();
-      for (const step of steps) {
-        if (token.isCancellationRequested) {
-          break;
-        }
-        progress.report({ message: step.label });
-        const count = await step.run({ quiet: true, token });
-        counts.set(step.label, count);
+      if (run.superseded) {
+        output.appendLine('\n[Angular Code Quality] Restarted by a newer "Run all checks".');
+        return;
       }
-
-      if (token.isCancellationRequested) {
+      if (!run.completed) {
         output.appendLine(
           '\n[Angular Code Quality] Canceled — the Problems panel shows only partial results from this run.'
         );
@@ -991,23 +1492,34 @@ async function runAllChecks(opts: RunAllOptions = {}): Promise<void> {
       }
 
       // Build a per-tool breakdown plus a grand total. A tool that failed to run
-      // reports -1; surface that as "not run" rather than folding it into 0.
+      // reports a negative count; surface that as "not run" rather than folding it into 0.
       let total = 0;
       const outputLines: string[] = [];
       const toastParts: string[] = [];
-      for (const step of steps) {
-        const count = counts.get(step.label);
+      for (const key of run.selection.run) {
+        const label = getTool(key).label;
+        const count = run.counts.get(key);
         if (count === undefined) {
           continue;
         }
-        if (count < 0) {
-          outputLines.push(`${step.label}: not run (see output)`);
-          toastParts.push(`${step.label} not run`);
+        if (count === RUN_SUPERSEDED) {
+          outputLines.push(`${label}: re-run separately (see its own result)`);
+        } else if (count < 0) {
+          outputLines.push(`${label}: not run (see output)`);
+          toastParts.push(`${label} not run`);
         } else {
           total += count;
-          outputLines.push(`${step.label}: ${pluralizeProblems(count)}`);
-          toastParts.push(`${step.label} ${count}`);
+          outputLines.push(`${label}: ${pluralizeProblems(count)}`);
+          toastParts.push(`${label} ${count}`);
         }
+      }
+      const notInstalled = run.selection.skipped
+        .filter((s) => s.reason === 'not-installed')
+        .map((s) => s.key);
+      for (const skip of run.selection.skipped) {
+        outputLines.push(
+          `${getTool(skip.key).label}: skipped (${skip.reason === 'covered-by-knip' ? 'knip covers it' : 'not installed'})`
+        );
       }
 
       // Full breakdown → output channel (multi-line survives there).
@@ -1018,15 +1530,27 @@ async function runAllChecks(opts: RunAllOptions = {}): Promise<void> {
       output.appendLine(`  Total: ${pluralizeProblems(total)}`);
       output.appendLine('See the Problems view (View → Problems) for details.');
 
-      const summaryText = `Angular Code Quality — scan completed: ${pluralizeProblems(total)} (${toastParts.join(', ')}).`;
+      const missingNote =
+        notInstalled.length > 0
+          ? ` Not installed: ${notInstalled.map((k) => getTool(k).label).join(', ')}.`
+          : '';
+      const summaryText = `Angular Code Quality — scan completed: ${pluralizeProblems(total)} (${toastParts.join(', ')}).${missingNote}`;
       if (opts.background) {
         // Activation path: don't interrupt with a popup; the status-bar summary
         // already reflects the totals.
         vscode.window.setStatusBarMessage(summaryText, 5000);
-      } else {
-        // Concise single-line toast (VS Code collapses newlines in notifications).
-        vscode.window.showInformationMessage(summaryText);
+        return;
       }
+      // Concise single-line toast (VS Code collapses newlines in notifications).
+      const actions = [total > 0 ? 'Show problems' : undefined, notInstalled.length > 0 ? 'Install missing' : undefined]
+        .filter((a): a is string => Boolean(a));
+      void vscode.window.showInformationMessage(summaryText, ...actions).then((choice) => {
+        if (choice === 'Show problems') {
+          void vscode.commands.executeCommand('workbench.actions.view.problems');
+        } else if (choice === 'Install missing') {
+          void installTools(notInstalled, folder);
+        }
+      });
     }
   );
 }
@@ -1045,15 +1569,18 @@ function severityToText(severity: vscode.DiagnosticSeverity): IssueSeverity {
   }
 }
 
-/** Flatten every current diagnostic into serializable report findings (paths workspace-relative). */
+/** Flatten this folder's current diagnostics into serializable report findings (paths folder-relative). */
 function gatherReportFindings(cwd: string): ReportFinding[] {
   const findings: ReportFinding[] = [];
-  for (const key of ALL_TOOL_KEYS) {
+  for (const key of TOOL_KEYS) {
     const collection = collections.get(key);
     if (!collection) {
       continue;
     }
     collection.forEach((uri, diagnostics) => {
+      if (!isInsideFolder(cwd, uri.fsPath)) {
+        return;
+      }
       const rel = path.relative(cwd, uri.fsPath) || uri.fsPath;
       for (const d of diagnostics) {
         findings.push({
@@ -1071,18 +1598,21 @@ function gatherReportFindings(cwd: string): ReportFinding[] {
 }
 
 /**
- * CI-parity export: run the four core checks, then write every current finding
- * (including any knip/template/madge results already present) to
- * `angular-code-quality-report.json` in the workspace root and open it. The JSON
+ * CI-parity export: run the selected checks, then write every current finding
+ * for the folder (including any results already present from other tools) to
+ * `angular-code-quality-report.json` in the folder root and open it. The JSON
  * is deterministic so it can be committed or diffed in CI.
  */
 async function exportReport(): Promise<void> {
-  const folder = getWorkspaceFolder();
+  const folder = await resolveFolder();
   if (!folder) {
     return;
   }
   const cwd = folder.uri.fsPath;
   const output = getOutputChannel(getConfig().revealOutput);
+  if (!(await ensureChecksAvailable(folder, false))) {
+    return;
+  }
 
   await vscode.window.withProgress(
     {
@@ -1091,18 +1621,9 @@ async function exportReport(): Promise<void> {
       cancellable: true,
     },
     async (progress, token) => {
-      const steps: { label: string; run: (b: BatchOptions) => Promise<number> }[] = [
-        { label: 'ESLint', run: runEslint },
-        { label: 'Stylelint', run: runStylelint },
-        { label: 'ts-prune', run: runTsPrune },
-        { label: 'depcheck', run: runDepcheck },
-      ];
-      for (const step of steps) {
-        if (token.isCancellationRequested) {
-          return;
-        }
-        progress.report({ message: step.label });
-        await step.run({ quiet: true, token });
+      const run = await runSelectedChecks(folder, progress, token);
+      if (!run.completed) {
+        return;
       }
 
       const findings = gatherReportFindings(cwd);
@@ -1137,21 +1658,17 @@ async function exportReport(): Promise<void> {
   );
 }
 
-/** Clear every collection this extension owns, without any user-facing message. */
-function clearDiagnosticCollections(): void {
-  for (const collection of collections.values()) {
-    collection.clear();
-  }
-}
-
 /**
  * Clear only the diagnostics this extension created. Because each collection is
  * owned by this extension, `.clear()` never touches diagnostics contributed by
  * TypeScript, the Angular Language Service, the ESLint extension, or anything else.
  */
 function clearAllDiagnostics(): void {
-  clearDiagnosticCollections();
-  summaryStatusBar?.hide();
+  for (const collection of collections.values()) {
+    collection.clear();
+  }
+  runStatus.clear();
+  updateSummaryStatusBar();
   vscode.window.setStatusBarMessage('Angular Code Quality: cleared all results.', 3000);
 }
 
@@ -1160,49 +1677,29 @@ function clearAllDiagnostics(): void {
 /** Coalesce rapid saves (e.g. Save All, formatters re-saving) into one run. */
 const RUN_ON_SAVE_DEBOUNCE_MS = 800;
 let runOnSaveTimer: ReturnType<typeof setTimeout> | undefined;
-const pendingRunOnSaveTools = new Set<ToolKey>();
-
-/** Invoke a single tool's run quietly (no toast/progress) for background refreshes. */
-async function runToolByKey(tool: ToolKey): Promise<void> {
-  const quiet = { quiet: true };
-  switch (tool) {
-    case 'depcheck':
-      await runDepcheck(quiet);
-      break;
-    case 'ts-prune':
-      await runTsPrune(quiet);
-      break;
-    case 'eslint':
-      await runEslint(quiet);
-      break;
-    case 'stylelint':
-      await runStylelint(quiet);
-      break;
-    case 'angular-template':
-      await runTemplateLint(quiet);
-      break;
-    // knip and madge are whole-project scans; run-on-save never schedules them.
-    case 'knip':
-    case 'madge':
-      break;
-  }
-}
+/** Pending tools per workspace folder (keyed by folder URI). */
+const pendingRunOnSave = new Map<string, { folder: vscode.WorkspaceFolder; tools: Set<ToolKey> }>();
 
 async function flushRunOnSave(): Promise<void> {
   runOnSaveTimer = undefined;
-  const tools = [...pendingRunOnSaveTools];
-  pendingRunOnSaveTools.clear();
+  const batches = [...pendingRunOnSave.values()];
+  pendingRunOnSave.clear();
   // Run sequentially so several tools don't contend for the same package manager.
-  for (const tool of tools) {
-    await runToolByKey(tool);
+  for (const { folder, tools } of batches) {
+    for (const tool of tools) {
+      await TOOL_RUNNERS[tool]({ folder, quiet: true });
+    }
   }
 }
 
-/** Queue the given tools and (re)start the debounce window. */
-function scheduleRunOnSave(tools: ToolKey[]): void {
+/** Queue the given tools for `folder` and (re)start the debounce window. */
+function scheduleRunOnSave(folder: vscode.WorkspaceFolder, tools: ToolKey[]): void {
+  const key = folder.uri.toString();
+  const pending = pendingRunOnSave.get(key) ?? { folder, tools: new Set<ToolKey>() };
   for (const tool of tools) {
-    pendingRunOnSaveTools.add(tool);
+    pending.tools.add(tool);
   }
+  pendingRunOnSave.set(key, pending);
   if (runOnSaveTimer) {
     clearTimeout(runOnSaveTimer);
   }
@@ -1210,26 +1707,24 @@ function scheduleRunOnSave(tools: ToolKey[]): void {
 }
 
 function handleDidSave(document: vscode.TextDocument): void {
-  if (!vscode.workspace.getConfiguration('angularCodeQuality').get<boolean>('runOnSave', false)) {
+  if (!getConfig().runOnSave || document.uri.scheme !== 'file') {
     return;
   }
-  if (document.uri.scheme !== 'file') {
-    return;
-  }
-  const folder = getWorkspaceFolder();
+  // Only react to files inside a workspace folder; run in *that* folder.
+  const folder = vscode.workspace.getWorkspaceFolder(document.uri);
   if (!folder) {
     return;
   }
-  // Only react to files inside the workspace folder.
-  const rel = path.relative(folder.uri.fsPath, document.uri.fsPath);
-  if (rel.startsWith('..') || path.isAbsolute(rel)) {
-    return;
-  }
-  const tools = toolsForSavedFile(document.uri.fsPath);
+  // Only re-run tools that "Run all checks" would run here, so a save never
+  // triggers a tool that isn't installed or that the user turned off.
+  const enabled = new Set(checkSelectionFor(folder.uri.fsPath).run);
+  const tools = toolsForSavedFile(document.uri.fsPath).filter((t) => enabled.has(t));
   if (tools.length > 0) {
-    scheduleRunOnSave(tools);
+    scheduleRunOnSave(folder, tools);
   }
 }
+
+// --- Quick fixes ------------------------------------------------------------
 
 const REMOVE_UNUSED_DEPENDENCY_COMMAND = 'angularCodeQualityToolkit.removeUnusedDependency';
 
@@ -1311,6 +1806,7 @@ async function removeUnusedDependency(uri: vscode.Uri, depName: string): Promise
     const expected = `${UNUSED_DEPENDENCY_PREFIX}${depName}`;
     const remaining = (depcheckCollection.get(uri) ?? []).filter((d) => d.message !== expected);
     depcheckCollection.set(uri, remaining);
+    updateSummaryStatusBar();
   }
 }
 
@@ -1400,14 +1896,23 @@ async function removeUnusedExport(uri: vscode.Uri, lineNo: number): Promise<void
       (d) => d.range.start.line !== lineNo
     );
     tsPruneCollection.set(uri, remaining);
+    updateSummaryStatusBar();
   }
 }
 
+// --- Activation -------------------------------------------------------------
+
+/** Accepts a ToolKey from a tree item / command argument; ignores anything else. */
+function asToolKey(arg: unknown): ToolKey | undefined {
+  return isToolKey(arg) ? arg : undefined;
+}
+
 export function activate(context: vscode.ExtensionContext): void {
+  extensionContext = context;
   extensionVersion =
     (context.extension?.packageJSON as { version?: string } | undefined)?.version ?? extensionVersion;
 
-  for (const key of ALL_TOOL_KEYS) {
+  for (const key of TOOL_KEYS) {
     const collection = vscode.languages.createDiagnosticCollection(`${DIAGNOSTIC_SOURCE}: ${key}`);
     collections.set(key, collection);
     context.subscriptions.push(collection);
@@ -1423,29 +1928,54 @@ export function activate(context: vscode.ExtensionContext): void {
   summaryStatusBar.command = 'workbench.actions.view.problems';
   context.subscriptions.push(summaryStatusBar);
 
+  // Sidebar: the "Tools" tree in the Code Quality activity-bar container.
+  toolsTree = new ToolsTreeProvider(toolViewState);
+  toolsView = vscode.window.createTreeView('angularCodeQuality.tools', {
+    treeDataProvider: toolsTree,
+  });
+  context.subscriptions.push(toolsTree, toolsView);
+
+  const cmd = (id: string, fn: (...args: unknown[]) => unknown): vscode.Disposable =>
+    vscode.commands.registerCommand(`angularCodeQualityToolkit.${id}`, fn);
+
   context.subscriptions.push(
-    vscode.commands.registerCommand('angularCodeQualityToolkit.runDepcheck', () => runDepcheck()),
-    vscode.commands.registerCommand('angularCodeQualityToolkit.runTsPrune', () => runTsPrune()),
-    vscode.commands.registerCommand('angularCodeQualityToolkit.runEslint', () => runEslint()),
-    vscode.commands.registerCommand('angularCodeQualityToolkit.runStylelint', () => runStylelint()),
-    vscode.commands.registerCommand('angularCodeQualityToolkit.runKnip', () => runKnip()),
-    vscode.commands.registerCommand('angularCodeQualityToolkit.runTemplateLint', () =>
-      runTemplateLint()
-    ),
-    vscode.commands.registerCommand('angularCodeQualityToolkit.runMadge', () => runMadge()),
-    vscode.commands.registerCommand('angularCodeQualityToolkit.exportReport', () => exportReport()),
-    vscode.commands.registerCommand('angularCodeQualityToolkit.fixEslint', () => fixEslint()),
-    vscode.commands.registerCommand('angularCodeQualityToolkit.fixStylelint', () => fixStylelint()),
-    vscode.commands.registerCommand('angularCodeQualityToolkit.addEslintToAngular', () =>
-      addEslintToAngular()
-    ),
-    vscode.commands.registerCommand('angularCodeQualityToolkit.runAllChecks', () => runAllChecks()),
-    vscode.commands.registerCommand('angularCodeQualityToolkit.clearDiagnostics', () =>
-      clearAllDiagnostics()
-    ),
-    vscode.commands.registerCommand('angularCodeQualityToolkit.selectProject', () =>
-      selectAngularProject()
-    ),
+    cmd('runDepcheck', () => runSingleTool('depcheck')),
+    cmd('runTsPrune', () => runSingleTool('ts-prune')),
+    cmd('runEslint', () => runSingleTool('eslint')),
+    cmd('runStylelint', () => runSingleTool('stylelint')),
+    cmd('runKnip', () => runSingleTool('knip')),
+    cmd('runTemplateLint', () => runSingleTool('angular-template')),
+    cmd('runMadge', () => runSingleTool('madge')),
+    cmd('exportReport', () => exportReport()),
+    cmd('fixEslint', () => fixTool('eslint')),
+    cmd('fixStylelint', () => fixTool('stylelint')),
+    cmd('addEslintToAngular', () => addEslintToAngular()),
+    cmd('runAllChecks', () => runAllChecks()),
+    cmd('clearDiagnostics', () => clearAllDiagnostics()),
+    cmd('selectProject', () => selectAngularProject()),
+    cmd('setupTools', () => setupTools()),
+    cmd('openSettings', () => openSettings()),
+    cmd('openWalkthrough', () => openWalkthrough()),
+    cmd('refreshTools', () => {
+      refreshInstallStates();
+      updateSummaryStatusBar();
+    }),
+    // Sidebar row actions (argument: the row's ToolKey).
+    vscode.commands.registerCommand(RUN_TOOL_COMMAND, (key: unknown) => {
+      const tool = asToolKey(key);
+      return tool ? runSingleTool(tool) : undefined;
+    }),
+    vscode.commands.registerCommand(INSTALL_TOOL_COMMAND, (key: unknown) => {
+      const tool = asToolKey(key);
+      if (tool === 'eslint') {
+        return addEslintToAngular();
+      }
+      return tool ? installTools([tool]) : undefined;
+    }),
+    cmd('fixTool', (key: unknown) => {
+      const tool = asToolKey(key);
+      return tool ? fixTool(tool) : undefined;
+    }),
     vscode.commands.registerCommand(
       REMOVE_UNUSED_DEPENDENCY_COMMAND,
       (uri: vscode.Uri, depName: string) => removeUnusedDependency(uri, depName)
@@ -1467,19 +1997,58 @@ export function activate(context: vscode.ExtensionContext): void {
       { providedCodeActionKinds: UnusedExportCodeActionProvider.providedCodeActionKinds }
     ),
     // Run-on-save: re-run the relevant tool(s) when a file is saved (opt-in).
-    vscode.workspace.onDidSaveTextDocument(handleDidSave)
+    vscode.workspace.onDidSaveTextDocument(handleDidSave),
+    // Multi-root: the sidebar follows the folder of the file being edited.
+    vscode.window.onDidChangeActiveTextEditor((editor) => {
+      const folder = editor && vscode.workspace.getWorkspaceFolder(editor.document.uri);
+      if (folder) {
+        setCurrentFolder(folder);
+      }
+    }),
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('angularCodeQuality')) {
+        toolsTree?.refresh();
+      }
+    })
   );
 
-  // Show the active Angular project in the status bar on startup, if any.
-  const folder = vscode.workspace.workspaceFolders?.[0];
-  if (folder) {
-    void getActiveProject(folder.uri.fsPath);
-    // Opt-in: run all checks once on activation so the Problems panel is
-    // populated as soon as the workspace opens.
+  // Installs (from our terminal or the user's) change package.json / node_modules;
+  // re-detect the tools shortly after so the sidebar updates by itself.
+  let installRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+  const scheduleInstallRefresh = (): void => {
+    if (installRefreshTimer) {
+      clearTimeout(installRefreshTimer);
+    }
+    installRefreshTimer = setTimeout(() => refreshInstallStates(), 1500);
+  };
+  const watcher = vscode.workspace.createFileSystemWatcher(
+    '**/{package.json,node_modules/.package-lock.json,node_modules/.modules.yaml,node_modules/.yarn-state.yml}'
+  );
+  context.subscriptions.push(
+    watcher,
+    watcher.onDidChange(scheduleInstallRefresh),
+    watcher.onDidCreate(scheduleInstallRefresh),
+    watcher.onDidDelete(scheduleInstallRefresh),
+    vscode.window.onDidCloseTerminal((t) => {
+      if (t.name === INSTALL_TERMINAL_NAME || t.name === 'Angular Code Quality: Add ESLint') {
+        scheduleInstallRefresh();
+      }
+    }),
+    { dispose: () => installRefreshTimer && clearTimeout(installRefreshTimer) }
+  );
+
+  // Initial state: pick the folder, show its project and tools, then (opt-in)
+  // run all checks and (once per workspace) offer to install missing tools.
+  void (async () => {
+    const folder = await resolveFolder({ quiet: true });
+    if (!folder) {
+      return;
+    }
     if (getConfig().runOnActivation) {
       void runAllChecks({ background: true });
     }
-  }
+    await maybePromptSetup(folder);
+  })();
 }
 
 export function deactivate(): void {
@@ -1487,7 +2056,8 @@ export function deactivate(): void {
     clearTimeout(runOnSaveTimer);
     runOnSaveTimer = undefined;
   }
-  pendingRunOnSaveTools.clear();
+  pendingRunOnSave.clear();
+  runRegistry.cancelAll();
   outputChannel?.dispose();
   projectStatusBar?.dispose();
   projectStatusBar = undefined;
@@ -1498,4 +2068,10 @@ export function deactivate(): void {
   }
   collections.clear();
   activeProjectByFolder.clear();
+  runStatus.clear();
+  installStates.clear();
+  currentFolder = undefined;
+  toolsTree = undefined;
+  toolsView = undefined;
+  extensionContext = undefined;
 }

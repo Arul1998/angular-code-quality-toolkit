@@ -21,6 +21,13 @@ const CONTRIBUTED_COMMANDS = [
   'angularCodeQualityToolkit.selectProject',
   'angularCodeQualityToolkit.removeUnusedDependency',
   'angularCodeQualityToolkit.removeUnusedExport',
+  'angularCodeQualityToolkit.setupTools',
+  'angularCodeQualityToolkit.openSettings',
+  'angularCodeQualityToolkit.openWalkthrough',
+  'angularCodeQualityToolkit.refreshTools',
+  'angularCodeQualityToolkit.runTool',
+  'angularCodeQualityToolkit.fixTool',
+  'angularCodeQualityToolkit.installTool',
 ];
 
 suite('Angular Code Quality Toolkit — integration', () => {
@@ -50,6 +57,35 @@ suite('Angular Code Quality Toolkit — integration', () => {
       [...CONTRIBUTED_COMMANDS].sort(),
       'package.json commands should exactly match the expected set'
     );
+  });
+
+  test('activates on its own in Angular / Nx workspaces', () => {
+    const extension = vscode.extensions.getExtension(EXTENSION_ID)!;
+    const events: string[] = extension.packageJSON.activationEvents ?? [];
+    assert.ok(events.includes('workspaceContains:angular.json'));
+    assert.ok(events.includes('workspaceContains:nx.json'));
+  });
+
+  test('contributes the Code Quality sidebar view and walkthrough', () => {
+    const contributes = vscode.extensions.getExtension(EXTENSION_ID)!.packageJSON.contributes;
+    const views = contributes.views?.angularCodeQuality ?? [];
+    assert.ok(views.some((v: { id: string }) => v.id === 'angularCodeQuality.tools'));
+    assert.ok(
+      (contributes.walkthroughs ?? []).some((w: { id: string }) => w.id === 'gettingStarted')
+    );
+  });
+
+  test('sidebar row commands ignore invalid arguments', async () => {
+    await vscode.extensions.getExtension(EXTENSION_ID)!.activate();
+    for (const command of [
+      'angularCodeQualityToolkit.runTool',
+      'angularCodeQualityToolkit.fixTool',
+      'angularCodeQualityToolkit.installTool',
+    ]) {
+      await assert.doesNotReject(
+        Promise.resolve(vscode.commands.executeCommand(command, 'not-a-tool'))
+      );
+    }
   });
 
   test('clearDiagnostics runs without throwing', async () => {

@@ -6,9 +6,10 @@ import { ToolKey } from './diagnostics';
  *
  *  - `package.json`   -> depcheck (dependency usage can change)
  *  - `*.ts`           -> ESLint + ts-prune (lint + unused-export analysis)
- *  - `*.html`         -> angular-template (ESLint over the template)
+ *  - `*.html`         -> angular-template + ESLint (`ng lint` usually covers templates too)
  *  - `*.css` / `*.scss` -> stylelint
  *
+ * The caller filters this down to the tools that are enabled and installed.
  * Returns an empty array for files no tool cares about (e.g. `.md`), so the
  * caller can cheaply skip scheduling a run. knip and madge are whole-project
  * scans, so they are intentionally never triggered by a single save.
@@ -25,7 +26,7 @@ export function toolsForSavedFile(filePath: string): ToolKey[] {
     return ['eslint', 'ts-prune'];
   }
   if (ext === '.html') {
-    return ['angular-template'];
+    return ['angular-template', 'eslint'];
   }
   if (ext === '.css' || ext === '.scss') {
     return ['stylelint'];

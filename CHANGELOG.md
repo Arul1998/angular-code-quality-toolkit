@@ -4,6 +4,34 @@ All notable changes to the Angular Code Quality Toolkit extension are documented
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-30
+
+### Added
+
+- **Code Quality sidebar.** A new Activity Bar view lists every tool with its live status (clean / N problems / running / failed / not installed). Click a row to run it, or to install it when it's missing. Inline buttons offer Run, Fix (`--fix` for ESLint / stylelint) and Install. The title bar has Run all checks, Refresh and Clear results; setup, project selection, report export and settings are in its `…` menu.
+- **Install / check tools.** New command that detects which tools are installed in the project and installs the ones you pick as devDependencies, in a terminal, with your package manager. Recommended tools (ESLint via `ng add @angular-eslint/schematics`, stylelint, knip) are pre-selected. When stylelint is installed into a project with no stylelint config, a minimal `.stylelintrc.json` is created so the first run works.
+- **First-run setup prompt.** Opening an Angular workspace where recommended tools are missing offers to install them, at most once per workspace, with a "Don't show again" option.
+- **Getting-started walkthrough** (**Angular Code Quality: Get started**) covering install → run → sidebar → fix → run-on-save.
+- **`angularCodeQuality.checks` setting.** Chooses which tools **Run all checks**, **Export report** and run-on-save use. Leave it empty (the default) for automatic selection: every installed tool, with **knip replacing ts-prune + depcheck** when it's installed. Tools that aren't installed are skipped instead of erroring, and the summary offers **Install missing**.
+- **Actionable notifications.** "Not installed" errors have an **Install** button. Failures have **Show output** and **Open settings**. Scan results have **Show problems**.
+- **Open settings** command.
+
+### Changed
+
+- **ESLint works without a `lint` script.** When `package.json` has no `lint` script (the default for `ng new` projects) but `angular.json` has a lint target, ESLint now runs through `ng lint`.
+- Saving a `.html` file with run-on-save enabled also re-runs ESLint (`ng lint` usually covers templates). Run-on-save only triggers tools that **Run all checks** would run.
+- Command Palette titles no longer repeat the category ("Angular Code Quality: Angular Code Quality: …").
+- Background runs (run-on-save, Run all checks) report a missing or failing tool once, instead of on every save.
+
+### Fixed
+
+- **Run on save / run on activation now work without running a command first.** The extension activates by itself in workspaces with `angular.json` or `nx.json`. Previously it only loaded when you invoked a command, so these settings did nothing until then.
+- **Stale findings are cleared.** Re-running a tool now removes findings from files that have since become clean. Before, they stayed in the Problems panel until **Run all checks** or **Clear results**.
+- **No more duplicate concurrent runs.** Starting a tool that's already running in the same folder (for example run-on-save during **Run all checks**) cancels the older run instead of racing it. Starting **Run all checks** again restarts it.
+- **Multi-root workspaces.** Commands now act on the folder of the active editor (or ask which folder), run-on-save runs in the saved file's folder, and each folder's results are kept separately. Previously everything used the first folder.
+- **Reliable "not installed" detection.** The extension checks `node_modules` before running a tool, so detection no longer depends on the language of shell error messages. The old heuristic remains as a fallback for Yarn Plug'n'Play.
+- A tool that fails (non-zero exit, no parseable output) keeps its previous findings instead of wiping them.
+
 ## [0.7.0] - 2026-09-02
 
 ### Added

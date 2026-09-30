@@ -1,8 +1,8 @@
 {
   "name": "angular-code-quality-toolkit",
   "displayName": "Angular Code Quality Toolkit",
-  "description": "VS Code extension to run Angular code-quality tools (depcheck, ts-prune, ESLint, stylelint), add ESLint to Angular projects, and help clean unused code, dependencies, and styles.",
-  "version": "0.7.0",
+  "description": "Run ESLint, stylelint, knip and more on your Angular project from one sidebar: every finding lands in the Problems panel, with one-click install, auto-fix and quick fixes.",
+  "version": "0.8.0",
   "publisher": "arul1998",
   "icon": "assets/icon.png",
   "repository": {
@@ -25,13 +25,21 @@
     "ts-prune",
     "depcheck",
     "cleanup",
-    "refactor"
+    "refactor",
+    "knip",
+    "madge",
+    "circular dependencies",
+    "angular-eslint"
   ],
   "homepage": "https://github.com/Arul1998/angular-code-quality-toolkit#readme",
   "bugs": {
     "url": "https://github.com/Arul1998/angular-code-quality-toolkit/issues"
   },
   "main": "./dist/extension.js",
+  "activationEvents": [
+    "workspaceContains:angular.json",
+    "workspaceContains:nx.json"
+  ],
   "capabilities": {
     "virtualWorkspaces": {
       "supported": false,
@@ -41,157 +49,209 @@
   "contributes": {
     "commands": [
       {
-        "command": "angularCodeQualityToolkit.runDepcheck",
-        "title": "Angular Code Quality: Run depcheck",
-        "category": "Angular Code Quality"
+        "command": "angularCodeQualityToolkit.runAllChecks",
+        "title": "Run all checks",
+        "category": "Angular Code Quality",
+        "icon": "$(run-all)"
       },
       {
-        "command": "angularCodeQualityToolkit.runTsPrune",
-        "title": "Angular Code Quality: Run ts-prune",
-        "category": "Angular Code Quality"
+        "command": "angularCodeQualityToolkit.setupTools",
+        "title": "Install / check tools…",
+        "category": "Angular Code Quality",
+        "icon": "$(cloud-download)"
       },
       {
         "command": "angularCodeQualityToolkit.runEslint",
-        "title": "Angular Code Quality: Run ESLint",
-        "category": "Angular Code Quality"
-      },
-      {
-        "command": "angularCodeQualityToolkit.addEslintToAngular",
-        "title": "Angular Code Quality: Add ESLint to Angular project",
+        "title": "Run ESLint",
         "category": "Angular Code Quality"
       },
       {
         "command": "angularCodeQualityToolkit.runStylelint",
-        "title": "Angular Code Quality: Run stylelint",
+        "title": "Run stylelint",
         "category": "Angular Code Quality"
       },
       {
         "command": "angularCodeQualityToolkit.runKnip",
-        "title": "Angular Code Quality: Run knip (unused files, exports, dependencies)",
+        "title": "Run knip (unused files, exports, dependencies)",
         "category": "Angular Code Quality"
       },
       {
         "command": "angularCodeQualityToolkit.runTemplateLint",
-        "title": "Angular Code Quality: Lint Angular templates (.html)",
+        "title": "Lint Angular templates (.html)",
         "category": "Angular Code Quality"
       },
       {
         "command": "angularCodeQualityToolkit.runMadge",
-        "title": "Angular Code Quality: Find circular dependencies (madge)",
+        "title": "Find circular dependencies (madge)",
         "category": "Angular Code Quality"
       },
       {
-        "command": "angularCodeQualityToolkit.exportReport",
-        "title": "Angular Code Quality: Export report (JSON)",
+        "command": "angularCodeQualityToolkit.runTsPrune",
+        "title": "Run ts-prune",
+        "category": "Angular Code Quality"
+      },
+      {
+        "command": "angularCodeQualityToolkit.runDepcheck",
+        "title": "Run depcheck",
         "category": "Angular Code Quality"
       },
       {
         "command": "angularCodeQualityToolkit.fixEslint",
-        "title": "Angular Code Quality: Fix ESLint problems (--fix)",
+        "title": "Fix ESLint problems (--fix)",
         "category": "Angular Code Quality"
       },
       {
         "command": "angularCodeQualityToolkit.fixStylelint",
-        "title": "Angular Code Quality: Fix stylelint problems (--fix)",
+        "title": "Fix stylelint problems (--fix)",
         "category": "Angular Code Quality"
       },
       {
-        "command": "angularCodeQualityToolkit.runAllChecks",
-        "title": "Angular Code Quality: Run all checks",
-        "category": "Angular Code Quality"
+        "command": "angularCodeQualityToolkit.exportReport",
+        "title": "Export report (JSON)",
+        "category": "Angular Code Quality",
+        "icon": "$(json)"
       },
       {
-        "command": "angularCodeQualityToolkit.clearDiagnostics",
-        "title": "Angular Code Quality: Clear results",
+        "command": "angularCodeQualityToolkit.addEslintToAngular",
+        "title": "Add ESLint to Angular project",
         "category": "Angular Code Quality"
       },
       {
         "command": "angularCodeQualityToolkit.selectProject",
-        "title": "Angular Code Quality: Select Angular project",
-        "category": "Angular Code Quality"
+        "title": "Select Angular project",
+        "category": "Angular Code Quality",
+        "icon": "$(symbol-namespace)"
+      },
+      {
+        "command": "angularCodeQualityToolkit.clearDiagnostics",
+        "title": "Clear results",
+        "category": "Angular Code Quality",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "angularCodeQualityToolkit.openSettings",
+        "title": "Open settings",
+        "category": "Angular Code Quality",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "angularCodeQualityToolkit.openWalkthrough",
+        "title": "Get started",
+        "category": "Angular Code Quality",
+        "icon": "$(book)"
+      },
+      {
+        "command": "angularCodeQualityToolkit.refreshTools",
+        "title": "Refresh tools",
+        "category": "Angular Code Quality",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "angularCodeQualityToolkit.runTool",
+        "title": "Run",
+        "category": "Angular Code Quality",
+        "icon": "$(play)"
+      },
+      {
+        "command": "angularCodeQualityToolkit.fixTool",
+        "title": "Fix auto-fixable problems (--fix)",
+        "category": "Angular Code Quality",
+        "icon": "$(wrench)"
+      },
+      {
+        "command": "angularCodeQualityToolkit.installTool",
+        "title": "Install",
+        "category": "Angular Code Quality",
+        "icon": "$(cloud-download)"
       },
       {
         "command": "angularCodeQualityToolkit.removeUnusedDependency",
-        "title": "Angular Code Quality: Remove unused dependency",
+        "title": "Remove unused dependency",
         "category": "Angular Code Quality"
       },
       {
         "command": "angularCodeQualityToolkit.removeUnusedExport",
-        "title": "Angular Code Quality: Remove export keyword",
+        "title": "Remove export keyword",
         "category": "Angular Code Quality"
       }
     ],
     "menus": {
       "commandPalette": [
         {
-          "command": "angularCodeQualityToolkit.runDepcheck",
-          "when": "workspaceFolderCount > 0",
-          "group": "navigation"
+          "command": "angularCodeQualityToolkit.runAllChecks",
+          "when": "workspaceFolderCount > 0"
         },
         {
-          "command": "angularCodeQualityToolkit.runTsPrune",
-          "when": "workspaceFolderCount > 0",
-          "group": "navigation"
+          "command": "angularCodeQualityToolkit.setupTools",
+          "when": "workspaceFolderCount > 0"
         },
         {
           "command": "angularCodeQualityToolkit.runEslint",
-          "when": "workspaceFolderCount > 0",
-          "group": "navigation"
-        },
-        {
-          "command": "angularCodeQualityToolkit.addEslintToAngular",
-          "when": "workspaceFolderCount > 0",
-          "group": "navigation"
+          "when": "workspaceFolderCount > 0"
         },
         {
           "command": "angularCodeQualityToolkit.runStylelint",
-          "when": "workspaceFolderCount > 0",
-          "group": "navigation"
+          "when": "workspaceFolderCount > 0"
         },
         {
           "command": "angularCodeQualityToolkit.runKnip",
-          "when": "workspaceFolderCount > 0",
-          "group": "navigation"
+          "when": "workspaceFolderCount > 0"
         },
         {
           "command": "angularCodeQualityToolkit.runTemplateLint",
-          "when": "workspaceFolderCount > 0",
-          "group": "navigation"
+          "when": "workspaceFolderCount > 0"
         },
         {
           "command": "angularCodeQualityToolkit.runMadge",
-          "when": "workspaceFolderCount > 0",
-          "group": "navigation"
+          "when": "workspaceFolderCount > 0"
         },
         {
-          "command": "angularCodeQualityToolkit.exportReport",
-          "when": "workspaceFolderCount > 0",
-          "group": "navigation"
+          "command": "angularCodeQualityToolkit.runTsPrune",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "angularCodeQualityToolkit.runDepcheck",
+          "when": "workspaceFolderCount > 0"
         },
         {
           "command": "angularCodeQualityToolkit.fixEslint",
-          "when": "workspaceFolderCount > 0",
-          "group": "navigation"
+          "when": "workspaceFolderCount > 0"
         },
         {
           "command": "angularCodeQualityToolkit.fixStylelint",
-          "when": "workspaceFolderCount > 0",
-          "group": "navigation"
+          "when": "workspaceFolderCount > 0"
         },
         {
-          "command": "angularCodeQualityToolkit.runAllChecks",
-          "when": "workspaceFolderCount > 0",
-          "group": "navigation"
+          "command": "angularCodeQualityToolkit.exportReport",
+          "when": "workspaceFolderCount > 0"
         },
         {
-          "command": "angularCodeQualityToolkit.clearDiagnostics",
-          "when": "workspaceFolderCount > 0",
-          "group": "navigation"
+          "command": "angularCodeQualityToolkit.addEslintToAngular",
+          "when": "workspaceFolderCount > 0"
         },
         {
           "command": "angularCodeQualityToolkit.selectProject",
-          "when": "workspaceFolderCount > 0",
-          "group": "navigation"
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "angularCodeQualityToolkit.clearDiagnostics",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "angularCodeQualityToolkit.refreshTools",
+          "when": "false"
+        },
+        {
+          "command": "angularCodeQualityToolkit.runTool",
+          "when": "false"
+        },
+        {
+          "command": "angularCodeQualityToolkit.fixTool",
+          "when": "false"
+        },
+        {
+          "command": "angularCodeQualityToolkit.installTool",
+          "when": "false"
         },
         {
           "command": "angularCodeQualityToolkit.removeUnusedDependency",
@@ -201,11 +261,103 @@
           "command": "angularCodeQualityToolkit.removeUnusedExport",
           "when": "false"
         }
+      ],
+      "view/title": [
+        {
+          "command": "angularCodeQualityToolkit.runAllChecks",
+          "when": "view == angularCodeQuality.tools",
+          "group": "navigation@1"
+        },
+        {
+          "command": "angularCodeQualityToolkit.refreshTools",
+          "when": "view == angularCodeQuality.tools",
+          "group": "navigation@2"
+        },
+        {
+          "command": "angularCodeQualityToolkit.clearDiagnostics",
+          "when": "view == angularCodeQuality.tools",
+          "group": "navigation@3"
+        },
+        {
+          "command": "angularCodeQualityToolkit.setupTools",
+          "when": "view == angularCodeQuality.tools",
+          "group": "1_setup@1"
+        },
+        {
+          "command": "angularCodeQualityToolkit.selectProject",
+          "when": "view == angularCodeQuality.tools",
+          "group": "1_setup@2"
+        },
+        {
+          "command": "angularCodeQualityToolkit.exportReport",
+          "when": "view == angularCodeQuality.tools",
+          "group": "2_report@1"
+        },
+        {
+          "command": "angularCodeQualityToolkit.openSettings",
+          "when": "view == angularCodeQuality.tools",
+          "group": "3_help@1"
+        },
+        {
+          "command": "angularCodeQualityToolkit.openWalkthrough",
+          "when": "view == angularCodeQuality.tools",
+          "group": "3_help@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "angularCodeQualityToolkit.fixTool",
+          "when": "view == angularCodeQuality.tools && viewItem =~ /-fixable$/",
+          "group": "inline@1"
+        },
+        {
+          "command": "angularCodeQualityToolkit.runTool",
+          "when": "view == angularCodeQuality.tools && viewItem =~ /^tool-ready/ && viewItem != tool-ready-fixable-running && viewItem != tool-ready-running",
+          "group": "inline@2"
+        },
+        {
+          "command": "angularCodeQualityToolkit.installTool",
+          "when": "view == angularCodeQuality.tools && viewItem =~ /^tool-missing/",
+          "group": "inline@1"
+        },
+        {
+          "command": "angularCodeQualityToolkit.runTool",
+          "when": "view == angularCodeQuality.tools && viewItem =~ /^tool-ready/",
+          "group": "1_run@1"
+        },
+        {
+          "command": "angularCodeQualityToolkit.fixTool",
+          "when": "view == angularCodeQuality.tools && viewItem =~ /fixable/",
+          "group": "1_run@2"
+        },
+        {
+          "command": "angularCodeQualityToolkit.installTool",
+          "when": "view == angularCodeQuality.tools && viewItem =~ /^tool-missing/",
+          "group": "1_run@1"
+        }
       ]
     },
     "configuration": {
       "title": "Angular Code Quality Toolkit",
       "properties": {
+        "angularCodeQuality.checks": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "eslint",
+              "stylelint",
+              "knip",
+              "angular-template",
+              "madge",
+              "ts-prune",
+              "depcheck"
+            ]
+          },
+          "uniqueItems": true,
+          "default": [],
+          "markdownDescription": "Tools that **Run all checks**, **Export report** and run-on-save use. Leave empty for automatic: every installed tool (ESLint, stylelint, knip, madge), with knip replacing ts-prune + depcheck when it is installed. Template lint (`angular-template`) runs only when listed here, since `ng lint` usually covers templates already."
+        },
         "angularCodeQuality.packageManager": {
           "type": "string",
           "enum": [
@@ -283,7 +435,97 @@
           "description": "Automatically run all checks once when the workspace opens, so the Problems panel is populated without running a command by hand. Runs quietly in the background (a status-bar spinner, no popups). Off by default."
         }
       }
-    }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "angularCodeQuality",
+          "title": "Angular Code Quality",
+          "icon": "media/activitybar.svg"
+        }
+      ]
+    },
+    "views": {
+      "angularCodeQuality": [
+        {
+          "id": "angularCodeQuality.tools",
+          "name": "Tools",
+          "contextualTitle": "Angular Code Quality"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "angularCodeQuality.tools",
+        "contents": "Open your Angular project folder to check its code quality.\n[Open Folder](command:vscode.openFolder)",
+        "when": "workspaceFolderCount == 0"
+      }
+    ],
+    "walkthroughs": [
+      {
+        "id": "gettingStarted",
+        "title": "Get started with Angular Code Quality",
+        "description": "Install the tools, run your first scan, and fix what it finds.",
+        "steps": [
+          {
+            "id": "install",
+            "title": "Install the tools",
+            "description": "The extension runs the tools installed in your project. Pick the recommended ones (ESLint, stylelint, knip) and they are installed as devDependencies.\n[Install / check tools](command:angularCodeQualityToolkit.setupTools)",
+            "media": {
+              "markdown": "media/walkthrough/install.md"
+            },
+            "completionEvents": [
+              "onCommand:angularCodeQualityToolkit.setupTools"
+            ]
+          },
+          {
+            "id": "runAll",
+            "title": "Run all checks",
+            "description": "One command runs every installed tool and puts each finding in the Problems panel. Click one to jump to the line.\n[Run all checks](command:angularCodeQualityToolkit.runAllChecks)",
+            "media": {
+              "markdown": "media/walkthrough/run.md"
+            },
+            "completionEvents": [
+              "onCommand:angularCodeQualityToolkit.runAllChecks"
+            ]
+          },
+          {
+            "id": "sidebar",
+            "title": "Use the Code Quality view",
+            "description": "The Code Quality icon in the Activity Bar lists each tool with its live status. Run, fix or install a tool with one click.\n[Open the Code Quality view](command:workbench.view.extension.angularCodeQuality)",
+            "media": {
+              "markdown": "media/walkthrough/sidebar.md"
+            },
+            "completionEvents": [
+              "onView:angularCodeQuality.tools"
+            ]
+          },
+          {
+            "id": "fix",
+            "title": "Fix problems",
+            "description": "Auto-fix lint and style issues, or use the lightbulb (Ctrl+. / Cmd+.) on a finding for a quick fix.\n[Fix ESLint problems](command:angularCodeQualityToolkit.fixEslint)",
+            "media": {
+              "markdown": "media/walkthrough/fix.md"
+            },
+            "completionEvents": [
+              "onCommand:angularCodeQualityToolkit.fixEslint",
+              "onCommand:angularCodeQualityToolkit.fixTool"
+            ]
+          },
+          {
+            "id": "runOnSave",
+            "title": "Keep results fresh",
+            "description": "Turn on run-on-save so the relevant checks re-run quietly whenever you save a file.\n[Open the setting](command:workbench.action.openSettings?%5B%22angularCodeQuality.runOnSave%22%5D)",
+            "media": {
+              "markdown": "media/walkthrough/run-on-save.md"
+            },
+            "completionEvents": [
+              "onSettingChanged:angularCodeQuality.runOnSave"
+            ]
+          }
+        ]
+      }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run package",

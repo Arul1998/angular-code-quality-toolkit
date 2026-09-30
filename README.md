@@ -1,6 +1,6 @@
 # Angular Code Quality Toolkit
 
-Run your Angular code-quality tools — **depcheck, ts-prune, ESLint, stylelint** — from inside VS Code, and see the results in the **Problems** panel like normal errors and warnings.
+Run your Angular code-quality tools — **ESLint, stylelint, knip**, template lint, circular-dependency checks (and the classic ts-prune / depcheck) — from one sidebar in VS Code, and see the results in the **Problems** panel like normal errors and warnings.
 
 Click a problem → jump straight to the file and line. No reading raw logs.
 
@@ -12,16 +12,43 @@ Click a problem → jump straight to the file and line. No reading raw logs.
 
 ---
 
+## Getting started (1 minute)
+
+1. Open your Angular project. The extension activates by itself when it finds `angular.json` (or `nx.json`).
+2. If recommended tools are missing, it offers to install them. Otherwise click the **shield icon** in the Activity Bar and use **Install / check tools** from the `…` menu.
+3. Click **Run all checks** (▶▶ in the Code Quality view, or from the Command Palette).
+4. Open **View → Problems** and click a finding to jump to it.
+
+A guided walkthrough is available too: **Angular Code Quality: Get started** in the Command Palette.
+
+---
+
 ## What it does
 
-- Finds **unused npm dependencies** (depcheck)
-- Finds **unused TypeScript exports / dead code** (ts-prune)
-- Finds **lint issues** in your `.ts` (ESLint)
+- Finds **lint issues** in your `.ts` (ESLint) and, optionally, your `.html` templates
 - Finds **style issues** in your `.css` / `.scss` (stylelint)
+- Finds **unused files, exports and dependencies** (knip — or the legacy ts-prune + depcheck)
+- Finds **circular imports** (madge, optional)
 - Shows everything in **View → Problems**, grouped by file, each tagged with the tool that found it:
-  `angular-quality-eslint`, `angular-quality-stylelint`, `angular-quality-ts-prune`, `angular-quality-depcheck`
+  `angular-quality-eslint`, `angular-quality-stylelint`, `angular-quality-knip`, `angular-quality-template`, `angular-quality-madge`, `angular-quality-ts-prune`, `angular-quality-depcheck`
 
-The extension does **not** bundle these tools. It runs the copies you already have in your project (via npm, yarn, pnpm, or bun — auto-detected from your lockfile).
+The extension does **not** bundle these tools. It runs the copies you already have in your project (via npm, yarn, pnpm, or bun — auto-detected from your lockfile), and can install missing ones for you.
+
+---
+
+## The Code Quality view
+
+Click the **shield** icon in the Activity Bar. Every tool has a row with its live status:
+
+| Status | Meaning |
+| --- | --- |
+| **clean** | ran, nothing found |
+| **N problems** | ran, findings are in the Problems panel |
+| **running…** | in progress |
+| **failed — see output** | the tool errored; the Output channel has the details |
+| **not installed** | click the row to install it |
+
+Hover a row for its buttons: **Run**, **Fix** (ESLint / stylelint) and **Install**. The title bar has **Run all checks**, **Refresh** and **Clear results**. The `…` menu has **Install / check tools**, **Select Angular project**, **Export report**, **Open settings** and **Get started**. In a monorepo the view's subtitle shows the active project, and in a multi-root workspace it also shows the folder.
 
 ---
 
@@ -31,7 +58,8 @@ Open the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and type "Angular Code
 
 | Command | What it does |
 | --- | --- |
-| **Run all checks** | Runs the four core tools and shows a combined total. Start here. |
+| **Run all checks** | Runs every installed tool (or the ones in `angularCodeQuality.checks`) and shows a combined total. Start here. |
+| **Install / check tools…** | Shows which tools are missing and installs the ones you pick (recommended ones pre-selected). |
 | **Run depcheck** | Unused / missing dependencies. |
 | **Run ts-prune** | Unused TypeScript exports. |
 | **Run ESLint** | Lint issues (uses your `lint` npm script or `ng lint`). |
@@ -39,12 +67,13 @@ Open the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and type "Angular Code
 | **Run knip** | Unused files, exports, types, enum members, and dependencies in one pass (the maintained successor to ts-prune/depcheck). |
 | **Lint Angular templates (.html)** | Runs ESLint over your HTML templates (via `@angular-eslint/template`). |
 | **Find circular dependencies (madge)** | Reports each dependency cycle in your TypeScript sources. |
-| **Export report (JSON)** | Runs the core checks and writes `angular-code-quality-report.json` for CI / diffing. |
+| **Export report (JSON)** | Runs the selected checks and writes `angular-code-quality-report.json` for CI / diffing. |
 | **Fix ESLint problems (--fix)** | Auto-fix fixable ESLint issues, then re-scan and show what's left. |
 | **Fix stylelint problems (--fix)** | Auto-fix fixable stylelint issues, then re-scan and show what's left. |
 | **Add ESLint to Angular project** | Runs `ng add @angular-eslint/schematics` (use if you're still on TSLint). |
 | **Select Angular project** | In a monorepo, choose which `angular.json` project to check. |
 | **Clear results** | Removes only this extension's problems. Leaves TypeScript/ESLint-extension problems alone. |
+| **Open settings** / **Get started** | Jump to this extension's settings, or open the walkthrough. |
 
 ---
 
@@ -76,19 +105,21 @@ For lint and style issues, **Fix ESLint problems (--fix)** and **Fix stylelint p
 
 ## Setup
 
-You need an Angular workspace (a folder with `package.json`) and the tools you want to use installed in it:
+You need an Angular workspace (a folder with `package.json`) and the tools you want to use installed in it. The easiest way is **Install / check tools…**, which installs them for you (and creates a minimal `.stylelintrc.json` if you have no stylelint config). To do it by hand:
 
 ```bash
-npm install --save-dev depcheck ts-prune stylelint stylelint-config-standard-scss
+npx ng add @angular-eslint/schematics
+npm install --save-dev stylelint stylelint-config-standard-scss knip
 ```
 
 Optional tools, only if you want their commands:
 
 ```bash
-npm install --save-dev knip madge @angular-eslint/eslint-plugin-template @angular-eslint/template-parser
+npm install --save-dev madge @angular-eslint/eslint-plugin-template @angular-eslint/template-parser
+npm install --save-dev ts-prune depcheck   # legacy; knip covers both
 ```
 
-For ESLint, your `package.json` should have a `lint` script (e.g. `"lint": "ng lint"`). If you're still on TSLint, run **Add ESLint to Angular project** first.
+ESLint runs through your `lint` npm script if you have one, otherwise through `ng lint` (the lint target `ng add @angular-eslint/schematics` creates). If you're still on TSLint, run **Add ESLint to Angular project** first.
 
 To catch unused variables and parameters, add the rule to your ESLint config so **Run ESLint** reports them:
 
@@ -108,6 +139,7 @@ To catch unused variables and parameters, add the rule to your ESLint config so 
 
 | Setting | Default | What it does |
 | --- | --- | --- |
+| `angularCodeQuality.checks` | `[]` (automatic) | Tools **Run all checks**, **Export report** and run-on-save use. Empty = every installed tool, with knip replacing ts-prune + depcheck when installed. List tools (e.g. `["eslint", "angular-template"]`) to choose yourself. |
 | `angularCodeQuality.packageManager` | `auto` | `auto`, `npm`, `yarn`, `pnpm`, or `bun`. `auto` reads your lockfile. Yarn 1 users: set this to `npm`. |
 | `angularCodeQuality.tsPrune.tsconfigPath` | `tsconfig.app.json` | Which tsconfig ts-prune uses. |
 | `angularCodeQuality.stylelint.globs` | `["src/**/*.scss", "src/**/*.css"]` | Files stylelint checks when no style script exists. |
@@ -129,11 +161,11 @@ Set `angularCodeQuality.runOnSave` to `true` and the extension re-runs the relev
 | You save… | It re-runs |
 | --- | --- |
 | a `.ts` file | ESLint + ts-prune |
-| a `.html` file | Angular template lint |
+| a `.html` file | ESLint + Angular template lint |
 | a `.css` / `.scss` file | stylelint |
 | `package.json` | depcheck |
 
-(knip and madge are whole-project scans, so run-on-save never triggers them — run them from the Command Palette when you want them.)
+Only tools that **Run all checks** would run are triggered, so a save never runs a tool that isn't installed. (knip and madge are whole-project scans, so run-on-save never triggers them. Run them from the sidebar when you want them.)
 
 Runs happen **quietly** in the background (no notifications) and are **debounced**, so a "Save All" or a formatter re-saving triggers a single run rather than one per file. Off by default.
 
@@ -142,6 +174,8 @@ Runs happen **quietly** in the background (no notifications) and are **debounced
 ## Good to know
 
 - **Monorepo friendly.** Reads `angular.json`, supports apps + libraries and Nx-style `targets`. The active project shows in the status bar — click to switch.
+- **Multi-root friendly.** Commands act on the folder of the file you're editing (or ask), and each folder's results are kept separately.
+- **Never runs a tool twice at once.** Starting a tool while it's already running (say, run-on-save during **Run all checks**) restarts it rather than racing it.
 - **Every run is cancellable** via its progress notification.
 - **Each tool keeps its own results,** so running one tool never wipes another's, and re-running replaces stale results without duplicates.
 - **Pairs well with CI.** Use the extension for fast feedback while editing, then run the same four commands in CI to enforce them on every PR:
