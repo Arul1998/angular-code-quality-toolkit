@@ -76,6 +76,14 @@ export function removeDependencyFromPackageJson(
   return lines.join(eol);
 }
 
+/** Message of knip's "unused file" finding (see diagnostics.ts). */
+export const UNUSED_FILE_MESSAGE = 'Unused file (no references found)';
+
+/** Add a package-name pattern to an ignore list (no duplicates, original order kept). */
+export function addIgnorePattern(list: readonly string[], pattern: string): string[] {
+  return list.includes(pattern) ? [...list] : [...list, pattern];
+}
+
 /** Prefix of the ts-prune / knip "unused export" diagnostic message. */
 export const UNUSED_EXPORT_PREFIX = 'Unused export: ';
 

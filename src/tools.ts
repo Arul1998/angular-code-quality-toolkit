@@ -26,6 +26,8 @@ export interface ToolInfo {
   fixable?: boolean;
   /** Installed with `ng add <packages>` (an interactive schematic) rather than a plain dev install. */
   installViaNgAdd?: boolean;
+  /** Built into the extension (nothing to install); `detectPackage` says whether it applies. */
+  builtin?: boolean;
 }
 
 export const TOOLS: readonly ToolInfo[] = [
@@ -55,6 +57,14 @@ export const TOOLS: readonly ToolInfo[] = [
     packages: ['knip'],
     detectPackage: 'knip',
     recommended: true,
+  },
+  {
+    key: 'angular',
+    label: 'Angular',
+    description: 'Unused components, directives and pipes (built in)',
+    packages: [],
+    detectPackage: '@angular/core',
+    builtin: true,
   },
   {
     key: 'angular-template',
@@ -146,7 +156,7 @@ export function detectInstallState(
 const CLASSIC_CORE: readonly ToolKey[] = ['eslint', 'stylelint', 'ts-prune', 'depcheck'];
 
 /** Tools picked automatically by "Run all checks" when installed (templates stay opt-in: `ng lint` usually covers them). */
-const AUTO_CANDIDATES: readonly ToolKey[] = ['eslint', 'stylelint', 'knip', 'ts-prune', 'depcheck', 'madge'];
+const AUTO_CANDIDATES: readonly ToolKey[] = ['eslint', 'stylelint', 'knip', 'angular', 'ts-prune', 'depcheck', 'madge'];
 
 export type SkipReason = 'not-installed' | 'covered-by-knip';
 

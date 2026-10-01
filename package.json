@@ -2,7 +2,7 @@
   "name": "angular-code-quality-toolkit",
   "displayName": "Angular Code Quality Toolkit",
   "description": "Run ESLint, stylelint, knip and more on your Angular project from one sidebar: every finding lands in the Problems panel, with one-click install, auto-fix and quick fixes.",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "publisher": "arul1998",
   "icon": "assets/icon.png",
   "repository": {
@@ -86,6 +86,11 @@
         "category": "Angular Code Quality"
       },
       {
+        "command": "angularCodeQualityToolkit.runAngularChecks",
+        "title": "Find unused components, directives and pipes",
+        "category": "Angular Code Quality"
+      },
+      {
         "command": "angularCodeQualityToolkit.runTsPrune",
         "title": "Run ts-prune",
         "category": "Angular Code Quality"
@@ -110,6 +115,34 @@
         "title": "Export report (JSON)",
         "category": "Angular Code Quality",
         "icon": "$(json)"
+      },
+      {
+        "command": "angularCodeQualityToolkit.showHealthReport",
+        "title": "Show health report",
+        "category": "Angular Code Quality",
+        "icon": "$(pulse)"
+      },
+      {
+        "command": "angularCodeQualityToolkit.exportHtmlReport",
+        "title": "Export health report (HTML)",
+        "category": "Angular Code Quality"
+      },
+      {
+        "command": "angularCodeQualityToolkit.createBaseline",
+        "title": "Create / update baseline (hide existing problems)",
+        "category": "Angular Code Quality",
+        "icon": "$(history)"
+      },
+      {
+        "command": "angularCodeQualityToolkit.clearBaseline",
+        "title": "Remove baseline",
+        "category": "Angular Code Quality"
+      },
+      {
+        "command": "angularCodeQualityToolkit.toggleChangedFilesOnly",
+        "title": "Toggle: only show problems in changed files",
+        "category": "Angular Code Quality",
+        "icon": "$(git-compare)"
       },
       {
         "command": "angularCodeQualityToolkit.addEslintToAngular",
@@ -172,6 +205,21 @@
       {
         "command": "angularCodeQualityToolkit.removeUnusedExport",
         "title": "Remove export keyword",
+        "category": "Angular Code Quality"
+      },
+      {
+        "command": "angularCodeQualityToolkit.fixFile",
+        "title": "Fix all auto-fixable problems in this file",
+        "category": "Angular Code Quality"
+      },
+      {
+        "command": "angularCodeQualityToolkit.deleteUnusedFile",
+        "title": "Delete unused file",
+        "category": "Angular Code Quality"
+      },
+      {
+        "command": "angularCodeQualityToolkit.ignoreDependency",
+        "title": "Ignore dependency in depcheck results",
         "category": "Angular Code Quality"
       }
     ],
@@ -260,6 +308,42 @@
         {
           "command": "angularCodeQualityToolkit.removeUnusedExport",
           "when": "false"
+        },
+        {
+          "command": "angularCodeQualityToolkit.runAngularChecks",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "angularCodeQualityToolkit.showHealthReport",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "angularCodeQualityToolkit.exportHtmlReport",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "angularCodeQualityToolkit.createBaseline",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "angularCodeQualityToolkit.clearBaseline",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "angularCodeQualityToolkit.toggleChangedFilesOnly",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "angularCodeQualityToolkit.fixFile",
+          "when": "false"
+        },
+        {
+          "command": "angularCodeQualityToolkit.deleteUnusedFile",
+          "when": "false"
+        },
+        {
+          "command": "angularCodeQualityToolkit.ignoreDependency",
+          "when": "false"
         }
       ],
       "view/title": [
@@ -279,6 +363,11 @@
           "group": "navigation@3"
         },
         {
+          "command": "angularCodeQualityToolkit.showHealthReport",
+          "when": "view == angularCodeQuality.tools",
+          "group": "navigation@4"
+        },
+        {
           "command": "angularCodeQualityToolkit.setupTools",
           "when": "view == angularCodeQuality.tools",
           "group": "1_setup@1"
@@ -291,17 +380,37 @@
         {
           "command": "angularCodeQualityToolkit.exportReport",
           "when": "view == angularCodeQuality.tools",
-          "group": "2_report@1"
+          "group": "3_report@1"
         },
         {
           "command": "angularCodeQualityToolkit.openSettings",
           "when": "view == angularCodeQuality.tools",
-          "group": "3_help@1"
+          "group": "4_help@1"
         },
         {
           "command": "angularCodeQualityToolkit.openWalkthrough",
           "when": "view == angularCodeQuality.tools",
-          "group": "3_help@2"
+          "group": "4_help@2"
+        },
+        {
+          "command": "angularCodeQualityToolkit.toggleChangedFilesOnly",
+          "when": "view == angularCodeQuality.tools",
+          "group": "2_scope@1"
+        },
+        {
+          "command": "angularCodeQualityToolkit.createBaseline",
+          "when": "view == angularCodeQuality.tools",
+          "group": "2_scope@2"
+        },
+        {
+          "command": "angularCodeQualityToolkit.clearBaseline",
+          "when": "view == angularCodeQuality.tools",
+          "group": "2_scope@3"
+        },
+        {
+          "command": "angularCodeQualityToolkit.exportHtmlReport",
+          "when": "view == angularCodeQuality.tools",
+          "group": "3_report@2"
         }
       ],
       "view/item/context": [
@@ -348,6 +457,7 @@
               "eslint",
               "stylelint",
               "knip",
+              "angular",
               "angular-template",
               "madge",
               "ts-prune",
@@ -356,7 +466,7 @@
           },
           "uniqueItems": true,
           "default": [],
-          "markdownDescription": "Tools that **Run all checks**, **Export report** and run-on-save use. Leave empty for automatic: every installed tool (ESLint, stylelint, knip, madge), with knip replacing ts-prune + depcheck when it is installed. Template lint (`angular-template`) runs only when listed here, since `ng lint` usually covers templates already."
+          "markdownDescription": "Tools that **Run all checks**, **Export report** and run-on-save use. Leave empty for automatic: every installed tool (ESLint, stylelint, knip, the built-in Angular checks, madge), with knip replacing ts-prune + depcheck when it is installed. Template lint (`angular-template`) runs only when listed here, since `ng lint` usually covers templates already."
         },
         "angularCodeQuality.packageManager": {
           "type": "string",
@@ -433,6 +543,21 @@
           "type": "boolean",
           "default": false,
           "description": "Automatically run all checks once when the workspace opens, so the Problems panel is populated without running a command by hand. Runs quietly in the background (a status-bar spinner, no popups). Off by default."
+        },
+        "angularCodeQuality.onlyChangedFiles": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Only show problems in files changed in git: edited, staged or untracked files (plus commits since `#angularCodeQuality.changedFilesBase#`, if set). The tools still scan the project; findings elsewhere are hidden. Handy in large or legacy codebases."
+        },
+        "angularCodeQuality.changedFilesBase": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "With `#angularCodeQuality.onlyChangedFiles#`, also include files changed on this branch since it forked from this git ref (e.g. `origin/main`). Empty = only uncommitted changes."
+        },
+        "angularCodeQuality.angular.suggestOnPush": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Make the built-in Angular checks also suggest `ChangeDetectionStrategy.OnPush` for components that don't set `changeDetection`."
         }
       }
     },

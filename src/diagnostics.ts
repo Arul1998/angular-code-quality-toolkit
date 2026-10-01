@@ -1,4 +1,5 @@
 import * as path from 'path';
+import { UNUSED_FILE_MESSAGE } from './codeActions';
 
 /**
  * This module is intentionally free of any `vscode` imports so that the parsers
@@ -23,7 +24,8 @@ export type ToolKey =
   | 'stylelint'
   | 'knip'
   | 'angular-template'
-  | 'madge';
+  | 'madge'
+  | 'angular';
 
 /**
  * Human-readable diagnostic `source` shown next to each entry in the Problems
@@ -39,6 +41,7 @@ export const DIAGNOSTIC_SOURCES: Record<ToolKey, string> = {
   knip: 'angular-quality-knip',
   'angular-template': 'angular-quality-template',
   madge: 'angular-quality-madge',
+  angular: 'angular-quality-angular',
 };
 
 export interface ParsedIssue {
@@ -674,7 +677,7 @@ export function parseKnipOutput(rawOutput: string, cwd: string): ParsedIssue[] {
       line: 0,
       column: 0,
       endColumn: 200,
-      message: 'Unused file (no references found)',
+      message: UNUSED_FILE_MESSAGE,
       severity: 'warning',
     });
   }

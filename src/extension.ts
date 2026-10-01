@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { spawn } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
@@ -35,11 +35,25 @@ import {
 import { toolsForSavedFile } from './runOnSave';
 import {
   UNUSED_DEPENDENCY_PREFIX,
+  UNUSED_EXPORT_PREFIX,
+  UNUSED_FILE_MESSAGE,
+  addIgnorePattern,
   dependencyNameFromMessage,
   removeDependencyFromPackageJson,
   removeExportKeywordFromLine,
 } from './codeActions';
 import { ReportFinding, buildReport } from './report';
+import { BASELINE_FILE, Baseline, BaselineKey, applyBaseline, buildBaseline, parseBaseline } from './baseline';
+import { changedFilesGitCommands, filterToChangedFiles, parseGitPaths, pathKey } from './changedFiles';
+import {
+  HealthReportData,
+  HealthSnapshot,
+  appendHistory,
+  renderHealthHtml,
+  snapshotFindings,
+  topFiles,
+} from './health';
+import { SourceFile, analyzeAngular } from './angularAnalyzer';
 import {
   DEFAULT_STYLELINT_CONFIG,
   InstallState,
@@ -103,6 +117,15 @@ let toolsView: vscode.TreeView<ToolKey> | undefined;
 const notifiedMissing = new Set<ToolKey>();
 const notifiedFailure = new Set<ToolKey>();
 
+/** Findings hidden by the baseline on each tool's last run, per `<folder>|<tool>`. */
+const baselineHidden = new Map<string, number>();
+/** Folders being baselined right now: their runs must publish unfiltered results. */
+const unfilteredFolders = new Set<string>();
+/** Paths compare case-insensitively on Windows and macOS (default filesystems). */
+const CASE_INSENSITIVE_PATHS = process.platform === 'win32' || process.platform === 'darwin';
+/** One-time notes (e.g. "not a git repo") so background runs don't repeat them. */
+const loggedOnce = new Set<string>();
+
 /** True if the setting has an explicit user value (workspace/global), not just its default. */
 function isConfigExplicitlySet(section: string): boolean {
   const info = vscode.workspace.getConfiguration('angularCodeQuality').inspect(section);
@@ -129,6 +152,9 @@ interface ToolkitConfig {
   runOnActivation: boolean;
   runOnSave: boolean;
   checks: string[];
+  onlyChangedFiles: boolean;
+  changedFilesBase: string;
+  suggestOnPush: boolean;
 }
 
 function getConfig(): ToolkitConfig {
@@ -146,6 +172,9 @@ function getConfig(): ToolkitConfig {
     runOnActivation: c.get<boolean>('runOnActivation', false),
     runOnSave: c.get<boolean>('runOnSave', false),
     checks: c.get<string[]>('checks', []),
+    onlyChangedFiles: c.get<boolean>('onlyChangedFiles', false),
+    changedFilesBase: c.get<string>('changedFilesBase', ''),
+    suggestOnPush: c.get<boolean>('angular.suggestOnPush', false),
   };
 }
 
@@ -294,6 +323,12 @@ function updateViewDescription(): void {
     if ((vscode.workspace.workspaceFolders?.length ?? 0) > 1) {
       parts.push(currentFolder.name);
     }
+    if (fs.existsSync(path.join(currentFolder.uri.fsPath, BASELINE_FILE))) {
+      parts.push('baseline');
+    }
+  }
+  if (getConfig().onlyChangedFiles) {
+    parts.push('changed files');
   }
   toolsView.description = parts.join(' · ') || undefined;
 }
@@ -713,6 +748,157 @@ function notifyToolFailed(key: ToolKey, message: string, quiet: boolean): void {
     });
 }
 
+// --- Result filtering: baseline + changed files only ------------------------
+
+/** Folder-relative, `/`-separated path (the form stored in the baseline). */
+function relPosix(cwd: string, file: string): string {
+  return path.relative(cwd, file).split(path.sep).join('/');
+}
+
+function logOnce(key: string, message: string): void {
+  if (!loggedOnce.has(key)) {
+    loggedOnce.add(key);
+    getOutputChannel(false).appendLine(`\n[Angular Code Quality] ${message}`);
+  }
+}
+
+function baselineUri(cwd: string): vscode.Uri {
+  return vscode.Uri.file(path.join(cwd, BASELINE_FILE));
+}
+
+async function loadBaseline(cwd: string): Promise<Baseline | undefined> {
+  const text = await readFileText(baselineUri(cwd));
+  if (text === undefined) {
+    return undefined;
+  }
+  const baseline = parseBaseline(text);
+  if (!baseline) {
+    logOnce(`bad-baseline|${cwd}`, `${BASELINE_FILE} isn't a valid baseline file — ignoring it.`);
+    return undefined;
+  }
+  return baseline;
+}
+
+function execGit(args: string[], cwd: string): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    execFile('git', args, { cwd, maxBuffer: 32 * 1024 * 1024, windowsHide: true }, (err, stdout) =>
+      resolve(err ? undefined : stdout)
+    );
+  });
+}
+
+/** Short-lived cache so "Run all checks" asks git once, not once per tool. */
+const changedFilesCache = new Map<string, { at: number; files: Promise<Set<string> | undefined> }>();
+
+/**
+ * Files changed in git (edited, staged, untracked, plus commits since
+ * `changedFilesBase` when set), as `pathKey`s. Undefined when the folder isn't a
+ * git repository, in which case nothing is filtered.
+ */
+function getChangedFiles(cwd: string): Promise<Set<string> | undefined> {
+  const cached = changedFilesCache.get(cwd);
+  if (cached && Date.now() - cached.at < 3000) {
+    return cached.files;
+  }
+  const files = (async () => {
+    const root = (await execGit(['rev-parse', '--show-toplevel'], cwd))?.trim();
+    if (!root) {
+      logOnce(`no-git|${cwd}`, `"Only changed files" is on, but ${cwd} isn't a git repository — showing all files.`);
+      return undefined;
+    }
+    const base = getConfig().changedFilesBase;
+    const commands = changedFilesGitCommands(base);
+    const outputs = await Promise.all(commands.map((args) => execGit(args, cwd)));
+    if (base.trim() && outputs[2] === undefined) {
+      logOnce(`bad-base|${cwd}|${base}`, `Couldn't diff against "${base}" (angularCodeQuality.changedFilesBase) — is it a valid git ref?`);
+    }
+    const set = new Set<string>();
+    for (const out of outputs) {
+      for (const file of parseGitPaths(out ?? '', root)) {
+        set.add(pathKey(file, CASE_INSENSITIVE_PATHS));
+      }
+    }
+    return set;
+  })();
+  changedFilesCache.set(cwd, { at: Date.now(), files });
+  return files;
+}
+
+interface FilteredIssues {
+  kept: ParsedIssue[];
+  baselineHidden: number;
+  outsideChanged: number;
+}
+
+/** Apply the baseline, then the "only changed files" scope, to a tool's findings. */
+async function filterIssues(
+  folder: vscode.WorkspaceFolder,
+  toolKey: ToolKey,
+  issues: ParsedIssue[]
+): Promise<FilteredIssues> {
+  const cwd = folder.uri.fsPath;
+  const result: FilteredIssues = { kept: issues, baselineHidden: 0, outsideChanged: 0 };
+  if (unfilteredFolders.has(cwd)) {
+    return result;
+  }
+  const baseline = await loadBaseline(cwd);
+  if (baseline) {
+    const keyOf = (i: ParsedIssue): BaselineKey => ({ tool: toolKey, file: relPosix(cwd, i.file), message: i.message });
+    const applied = applyBaseline(result.kept, keyOf, baseline);
+    result.kept = applied.kept;
+    result.baselineHidden = applied.suppressed;
+  }
+  if (getConfig().onlyChangedFiles) {
+    const changed = await getChangedFiles(cwd);
+    if (changed) {
+      const scoped = filterToChangedFiles(result.kept, changed, CASE_INSENSITIVE_PATHS);
+      result.kept = scoped.kept;
+      result.outsideChanged = scoped.hidden;
+    }
+  }
+  return result;
+}
+
+/**
+ * Last step of every run: filter, publish to the Problems panel, update status,
+ * and report. Returns the number of findings shown, or RUN_SUPERSEDED when a
+ * newer run of the tool started while filtering (its results win).
+ */
+async function publishIssues(
+  folder: vscode.WorkspaceFolder,
+  toolKey: ToolKey,
+  issues: ParsedIssue[],
+  presentation: { label: string; noun: string; quiet: boolean; isCurrent: () => boolean }
+): Promise<number> {
+  const cwd = folder.uri.fsPath;
+  const filtered = await filterIssues(folder, toolKey, issues);
+  if (!presentation.isCurrent()) {
+    return RUN_SUPERSEDED;
+  }
+  applyDiagnostics(collections.get(toolKey)!, toolKey, filtered.kept, cwd);
+  baselineHidden.set(`${cwd}|${toolKey}`, filtered.baselineHidden);
+  notifiedFailure.delete(toolKey);
+  notifiedMissing.delete(toolKey);
+  if (folder === currentFolder) {
+    installStates.set(toolKey, 'installed');
+  }
+  setRunStatus(toolKey, 'done');
+
+  const output = getOutputChannel(false);
+  const hidden: string[] = [];
+  if (filtered.baselineHidden > 0) {
+    hidden.push(`${filtered.baselineHidden} hidden by the baseline`);
+  }
+  if (filtered.outsideChanged > 0) {
+    hidden.push(`${filtered.outsideChanged} in unchanged files hidden`);
+  }
+  if (hidden.length > 0) {
+    output.appendLine(`\n[Angular Code Quality] ${presentation.label}: ${hidden.join(', ')}.`);
+  }
+  reportSummary(presentation.label, presentation.noun, filtered.kept.length, output, presentation.quiet);
+  return filtered.kept.length;
+}
+
 /** Everything a tool runner needs: which folder, and how to present the run. */
 interface RunContext {
   folder: vscode.WorkspaceFolder;
@@ -832,15 +1018,12 @@ async function runTool(options: RunOptions): Promise<number> {
       return RUN_FAILED;
     }
 
-    applyDiagnostics(collections.get(toolKey)!, toolKey, issues, cwd);
-    notifiedFailure.delete(toolKey);
-    notifiedMissing.delete(toolKey);
-    if (folder === currentFolder) {
-      installStates.set(toolKey, 'installed');
-    }
-    setRunStatus(toolKey, 'done');
-    reportSummary(options.label, options.noun, issues.length, output, quiet);
-    return issues.length;
+    return await publishIssues(folder, toolKey, issues, {
+      label: options.label,
+      noun: options.noun,
+      quiet,
+      isCurrent: () => handle.isCurrent(),
+    });
   } finally {
     handle.end();
     externalSub?.dispose();
@@ -1155,11 +1338,130 @@ async function runMadge(ctx: RunContext): Promise<number> {
   });
 }
 
+const SOURCE_EXCLUDE = '**/{node_modules,dist,out,coverage,tmp,.angular,.nx,.git}/**';
+const MAX_SOURCE_FILES = 20000;
+
+/** Read every .ts / .html file in the folder (outside build output and node_modules). */
+async function collectSourceFiles(
+  folder: vscode.WorkspaceFolder,
+  token: vscode.CancellationToken
+): Promise<SourceFile[] | undefined> {
+  const uris = await vscode.workspace.findFiles(
+    new vscode.RelativePattern(folder, '**/*.{ts,html}'),
+    SOURCE_EXCLUDE,
+    MAX_SOURCE_FILES,
+    token
+  );
+  const files: SourceFile[] = [];
+  const BATCH = 64;
+  for (let i = 0; i < uris.length; i += BATCH) {
+    if (token.isCancellationRequested) {
+      return undefined;
+    }
+    const batch = await Promise.all(
+      uris.slice(i, i + BATCH).map(async (uri) => {
+        try {
+          return { path: uri.fsPath, content: await fs.promises.readFile(uri.fsPath, 'utf8') };
+        } catch {
+          return undefined;
+        }
+      })
+    );
+    for (const f of batch) {
+      if (f) {
+        files.push(f);
+      }
+    }
+  }
+  return files;
+}
+
+/**
+ * Built-in Angular checks (see angularAnalyzer.ts): unused components,
+ * directives and pipes, plus opt-in OnPush suggestions. Nothing to install; it
+ * applies to any folder where @angular/core is installed.
+ */
+async function runAngularChecks(ctx: RunContext): Promise<number> {
+  const { folder } = ctx;
+  const cwd = folder.uri.fsPath;
+  const quiet = ctx.quiet ?? false;
+  const output = getOutputChannel(getConfig().revealOutput);
+  const label = 'Angular checks';
+
+  if (detectToolInstall(cwd, 'angular') === 'missing') {
+    const message = `Angular Code Quality: ${label} skipped — @angular/core isn't installed in ${folder.name}.`;
+    output.appendLine(`\n${message}`);
+    if (!quiet) {
+      vscode.window.showInformationMessage(message);
+    }
+    return RUN_FAILED;
+  }
+
+  const previousStatus = runStatus.get('angular') ?? 'idle';
+  const cts = new vscode.CancellationTokenSource();
+  const externalSub = ctx.token?.onCancellationRequested(() => cts.cancel());
+  if (ctx.token?.isCancellationRequested) {
+    cts.cancel();
+  }
+  const handle = runRegistry.begin(`${cwd}|angular`, () => cts.cancel());
+  setRunStatus('angular', 'running');
+
+  const analyze = async (): Promise<ParsedIssue[] | undefined> => {
+    const files = await collectSourceFiles(folder, cts.token);
+    if (!files || cts.token.isCancellationRequested) {
+      return undefined;
+    }
+    output.appendLine(`\n> ${label} (built in): scanning ${files.length} .ts/.html files in ${cwd}`);
+    if (files.length >= MAX_SOURCE_FILES) {
+      output.appendLine(`  Stopped at ${MAX_SOURCE_FILES} files; results may be incomplete.`);
+    }
+    return analyzeAngular(files, { suggestOnPush: getConfig().suggestOnPush });
+  };
+
+  try {
+    const issues = quiet
+      ? await analyze()
+      : await vscode.window.withProgress(
+          { location: vscode.ProgressLocation.Notification, title: `Angular Code Quality: ${label}…`, cancellable: true },
+          (_progress, token) => {
+            const sub = token.onCancellationRequested(() => cts.cancel());
+            return analyze().finally(() => sub.dispose());
+          }
+        );
+    if (!handle.isCurrent()) {
+      return RUN_SUPERSEDED;
+    }
+    if (!issues) {
+      output.appendLine('\n[Angular Code Quality] Canceled.');
+      setRunStatus('angular', previousStatus === 'running' ? 'idle' : previousStatus);
+      return RUN_FAILED;
+    }
+    return await publishIssues(folder, 'angular', issues, {
+      label,
+      noun: 'finding',
+      quiet,
+      isCurrent: () => handle.isCurrent(),
+    });
+  } catch (err) {
+    const message = `Angular Code Quality — ${label} failed: ${err instanceof Error ? err.message : String(err)}`;
+    output.appendLine(`\n${message}`);
+    setRunStatus('angular', 'failed');
+    notifyToolFailed('angular', message, quiet);
+    return RUN_FAILED;
+  } finally {
+    handle.end();
+    externalSub?.dispose();
+    cts.dispose();
+    updateSummaryStatusBar();
+  }
+}
+
 /** The runner for each tool. Adding a tool = an entry in tools.ts + a runner here. */
 const TOOL_RUNNERS: Record<ToolKey, (ctx: RunContext) => Promise<number>> = {
   eslint: (ctx) => runEslint(ctx),
   stylelint: (ctx) => runStylelint(ctx),
   knip: runKnip,
+  angular: runAngularChecks,
   'angular-template': runTemplateLint,
   madge: runMadge,
   'ts-prune': runTsPrune,
@@ -1240,7 +1542,8 @@ async function hasStylelintConfig(cwd: string): Promise<boolean> {
  * When stylelint is installed into a project without a stylelint config, a
  * minimal `.stylelintrc.json` is written so the first run works.
  */
-async function installTools(keys: ToolKey[], folderArg?: vscode.WorkspaceFolder): Promise<void> {
+async function installTools(requested: ToolKey[], folderArg?: vscode.WorkspaceFolder): Promise<void> {
+  const keys = requested.filter((k) => !getTool(k).builtin);
   const folder = folderArg ?? (await resolveFolder());
   if (!folder || keys.length === 0) {
     return;
@@ -1298,10 +1601,11 @@ async function setupTools(): Promise<void> {
     return;
   }
   const state = installStateFn(folder.uri.fsPath);
-  const missing = TOOLS.filter((t) => state(t.key) === 'missing');
+  const installable = TOOLS.filter((t) => !t.builtin);
+  const missing = installable.filter((t) => state(t.key) === 'missing');
 
   if (missing.length === 0) {
-    const allUnknown = TOOLS.every((t) => state(t.key) === 'unknown');
+    const allUnknown = installable.every((t) => state(t.key) === 'unknown');
     vscode.window.showInformationMessage(
       allUnknown
         ? 'Angular Code Quality: couldn\'t check which tools are installed (no node_modules, or Yarn Plug\'n\'Play). Run your package manager\'s install first.'
@@ -1490,6 +1794,8 @@ async function runAllChecks(opts: RunAllOptions = {}): Promise<void> {
         vscode.window.showWarningMessage('Angular Code Quality — checks canceled (partial results).');
         return;
       }
+      await recordHealthSnapshot(folder);
+      refreshHealthPanel();
 
       // Build a per-tool breakdown plus a grand total. A tool that failed to run
       // reports a negative count; surface that as "not run" rather than folding it into 0.
@@ -1668,8 +1974,236 @@ function clearAllDiagnostics(): void {
     collection.clear();
   }
   runStatus.clear();
+  baselineHidden.clear();
   updateSummaryStatusBar();
+  refreshHealthPanel();
   vscode.window.setStatusBarMessage('Angular Code Quality: cleared all results.', 3000);
+}
+
+// --- Baseline ---------------------------------------------------------------
+
+/** Every current finding in a folder, keyed the way the baseline stores them. */
+function gatherBaselineFindings(cwd: string): BaselineKey[] {
+  const findings: BaselineKey[] = [];
+  for (const key of TOOL_KEYS) {
+    collections.get(key)?.forEach((uri, diagnostics) => {
+      if (!isInsideFolder(cwd, uri.fsPath)) {
+        return;
+      }
+      for (const d of diagnostics) {
+        findings.push({ tool: key, file: relPosix(cwd, uri.fsPath), message: d.message });
+      }
+    });
+  }
+  return findings;
+}
+
+/**
+ * Run the selected checks without any filtering, record every finding in
+ * `.angular-code-quality-baseline.json`, and hide them. From then on only new
+ * findings show. Re-running it updates the baseline.
+ */
+async function createBaseline(): Promise<void> {
+  const folder = await resolveFolder();
+  if (!folder || !(await ensureChecksAvailable(folder, false))) {
+    return;
+  }
+  const cwd = folder.uri.fsPath;
+
+  await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: 'Angular Code Quality: creating baseline…', cancellable: true },
+    async (progress, token) => {
+      unfilteredFolders.add(cwd);
+      let run: ChecksRun;
+      try {
+        run = await runSelectedChecks(folder, progress, token);
+      } finally {
+        unfilteredFolders.delete(cwd);
+      }
+      if (!run.completed) {
+        return;
+      }
+      const findings = gatherBaselineFindings(cwd);
+      const baseline = buildBaseline(findings, new Date().toISOString());
+      try {
+        await vscode.workspace.fs.writeFile(baselineUri(cwd), Buffer.from(JSON.stringify(baseline, null, 2) + '\n', 'utf8'));
+      } catch (err) {
+        vscode.window.showErrorMessage(
+          `Angular Code Quality: couldn't write ${BASELINE_FILE} — ${err instanceof Error ? err.message : String(err)}`
+        );
+        return;
+      }
+      // Everything current is now baselined: hide it.
+      clearFolderDiagnostics(cwd, TOOL_KEYS);
+      for (const key of TOOL_KEYS) {
+        baselineHidden.delete(`${cwd}|${key}`);
+      }
+      updateViewDescription();
+      const choice = await vscode.window.showInformationMessage(
+        `Angular Code Quality: baseline saved — ${pluralizeProblems(findings.length)} hidden. From now on only new problems show. ` +
+          `Commit ${BASELINE_FILE} to share it with your team.`,
+        'Open baseline'
+      );
+      if (choice) {
+        await vscode.window.showTextDocument(baselineUri(cwd));
+      }
+    }
+  );
+}
+
+async function clearBaseline(): Promise<void> {
+  const folder = await resolveFolder();
+  if (!folder) {
+    return;
+  }
+  const uri = baselineUri(folder.uri.fsPath);
+  if (!(await pathExists(uri))) {
+    vscode.window.showInformationMessage(`Angular Code Quality: there is no baseline (${BASELINE_FILE}) in ${folder.name}.`);
+    return;
+  }
+  await vscode.workspace.fs.delete(uri);
+  updateViewDescription();
+  const choice = await vscode.window.showInformationMessage(
+    'Angular Code Quality: baseline removed. Run the checks again to see every finding.',
+    'Run all checks'
+  );
+  if (choice) {
+    await runAllChecks();
+  }
+}
+
+// --- Changed files only ------------------------------------------------------
+
+async function toggleChangedFilesOnly(): Promise<void> {
+  const config = vscode.workspace.getConfiguration('angularCodeQuality');
+  const next = !config.get<boolean>('onlyChangedFiles', false);
+  await config.update(
+    'onlyChangedFiles',
+    next,
+    vscode.workspace.workspaceFolders ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global
+  );
+  changedFilesCache.clear();
+  const choice = await vscode.window.showInformationMessage(
+    next
+      ? 'Angular Code Quality: showing only problems in files changed in git. Run the checks again to apply.'
+      : 'Angular Code Quality: showing problems in all files. Run the checks again to apply.',
+    'Run all checks'
+  );
+  if (choice) {
+    await runAllChecks();
+  }
+}
+
+// --- Health report ------------------------------------------------------------
+
+const HEALTH_HISTORY_PREFIX = 'angularCodeQuality.history:';
+let healthPanel: vscode.WebviewPanel | undefined;
+let healthPanelFolder: vscode.WorkspaceFolder | undefined;
+
+function toolLabelForSource(source: string): string {
+  return TOOLS.find((t) => DIAGNOSTIC_SOURCES[t.key] === source)?.label ?? source;
+}
+
+function healthHistory(cwd: string): HealthSnapshot[] {
+  return extensionContext?.workspaceState.get<HealthSnapshot[]>(HEALTH_HISTORY_PREFIX + cwd) ?? [];
+}
+
+/** Remember this run's totals (after a completed "Run all checks") for the trend. */
+async function recordHealthSnapshot(folder: vscode.WorkspaceFolder): Promise<void> {
+  const cwd = folder.uri.fsPath;
+  const snapshot = snapshotFindings(gatherReportFindings(cwd), new Date().toISOString(), toolLabelForSource);
+  await extensionContext?.workspaceState.update(HEALTH_HISTORY_PREFIX + cwd, appendHistory(healthHistory(cwd), snapshot));
+}
+
+function buildHealthData(folder: vscode.WorkspaceFolder): HealthReportData {
+  const cwd = folder.uri.fsPath;
+  const findings = gatherReportFindings(cwd);
+  const now = new Date().toISOString();
+  const current = snapshotFindings(findings, now, toolLabelForSource);
+  // The latest recorded run usually *is* the current state; compare against the one before it.
+  let history = healthHistory(cwd);
+  const last = history[history.length - 1];
+  if (last && last.total === current.total && last.errors === current.errors) {
+    history = history.slice(0, -1);
+  }
+  let suppressed = 0;
+  for (const key of TOOL_KEYS) {
+    suppressed += baselineHidden.get(`${cwd}|${key}`) ?? 0;
+  }
+  return {
+    title: activeProjectByFolder.get(cwd) ?? folder.name,
+    generatedAt: new Date(now).toLocaleString(),
+    current,
+    history,
+    topFiles: topFiles(findings),
+    baselineSuppressed: suppressed,
+    changedFilesOnly: getConfig().onlyChangedFiles,
+  };
+}
+
+function refreshHealthPanel(): void {
+  if (healthPanel && healthPanelFolder) {
+    healthPanel.webview.html = renderHealthHtml(buildHealthData(healthPanelFolder), {
+      cspSource: healthPanel.webview.cspSource,
+    });
+  }
+}
+
+/** Show the health report (score, per-tool counts, trend, worst files) in an editor tab. */
+async function showHealthReport(): Promise<void> {
+  const folder = await resolveFolder();
+  if (!folder) {
+    return;
+  }
+  // Nothing has run yet this session: run the checks first so the numbers mean something.
+  if (TOOL_KEYS.every((k) => (runStatus.get(k) ?? 'idle') === 'idle') && countAllFindings(folder.uri.fsPath) === 0) {
+    await runAllChecks();
+  }
+  healthPanelFolder = folder;
+  if (healthPanel) {
+    healthPanel.reveal();
+  } else {
+    healthPanel = vscode.window.createWebviewPanel(
+      'angularCodeQuality.health',
+      'Code Health',
+      vscode.ViewColumn.Active,
+      { enableScripts: false, retainContextWhenHidden: false }
+    );
+    healthPanel.onDidDispose(() => {
+      healthPanel = undefined;
+      healthPanelFolder = undefined;
+    });
+  }
+  healthPanel.title = `Code Health — ${activeProjectByFolder.get(folder.uri.fsPath) ?? folder.name}`;
+  refreshHealthPanel();
+}
+
+/** Write the same report as a standalone HTML file (for sharing, or CI artifacts). */
+async function exportHtmlReport(): Promise<void> {
+  const folder = await resolveFolder();
+  if (!folder) {
+    return;
+  }
+  const uri = vscode.Uri.file(path.join(folder.uri.fsPath, 'angular-code-quality-report.html'));
+  try {
+    await vscode.workspace.fs.writeFile(uri, Buffer.from(renderHealthHtml(buildHealthData(folder)), 'utf8'));
+  } catch (err) {
+    vscode.window.showErrorMessage(
+      `Angular Code Quality: couldn't write the HTML report — ${err instanceof Error ? err.message : String(err)}`
+    );
+    return;
+  }
+  const choice = await vscode.window.showInformationMessage(
+    `Angular Code Quality: report saved to ${path.basename(uri.fsPath)}.`,
+    'Open in browser'
+  );
+  if (choice) {
+    await vscode.env.openExternal(uri);
+  }
+}
+
+function countAllFindings(cwd: string): number {
+  return TOOL_KEYS.reduce((sum, key) => sum + countDiagnostics(key, cwd).count, 0);
 }
 
 // --- Run on save ------------------------------------------------------------
@@ -1744,7 +2278,8 @@ class UnusedDependencyCodeActionProvider implements vscode.CodeActionProvider {
   ): vscode.CodeAction[] {
     const actions: vscode.CodeAction[] = [];
     for (const diagnostic of context.diagnostics) {
-      if (diagnostic.source !== DIAGNOSTIC_SOURCES.depcheck) {
+      const fromDepcheck = diagnostic.source === DIAGNOSTIC_SOURCES.depcheck;
+      if (!fromDepcheck && diagnostic.source !== DIAGNOSTIC_SOURCES.knip) {
         continue;
       }
       const depName = dependencyNameFromMessage(diagnostic.message);
@@ -1756,12 +2291,29 @@ class UnusedDependencyCodeActionProvider implements vscode.CodeActionProvider {
         vscode.CodeActionKind.QuickFix
       );
       action.diagnostics = [diagnostic];
+      action.isPreferred = true;
       action.command = {
         command: REMOVE_UNUSED_DEPENDENCY_COMMAND,
         title: 'Remove unused dependency',
         arguments: [document.uri, depName],
       };
       actions.push(action);
+
+      // depcheck false positives (packages used only via config or CLI) can be
+      // silenced with the existing ignore setting.
+      if (fromDepcheck) {
+        const ignore = new vscode.CodeAction(
+          `Ignore "${depName}" in depcheck results`,
+          vscode.CodeActionKind.QuickFix
+        );
+        ignore.diagnostics = [diagnostic];
+        ignore.command = {
+          command: IGNORE_DEPENDENCY_COMMAND,
+          title: 'Ignore dependency',
+          arguments: [document.uri, depName],
+        };
+        actions.push(ignore);
+      }
     }
     return actions;
   }
@@ -1800,14 +2352,186 @@ async function removeUnusedDependency(uri: vscode.Uri, depName: string): Promise
     return;
   }
 
-  // Drop the resolved finding so it clears without waiting for the next run.
-  const depcheckCollection = collections.get('depcheck');
-  if (depcheckCollection) {
+  dropDependencyFinding(uri, depName);
+}
+
+/** Drop the depcheck/knip "unused dependency" finding so it clears without waiting for the next run. */
+function dropDependencyFinding(uri: vscode.Uri, depName: string): void {
+  const expected = `${UNUSED_DEPENDENCY_PREFIX}${depName}`;
+  for (const key of ['depcheck', 'knip'] as const) {
+    const collection = collections.get(key);
+    if (collection) {
+      collection.set(uri, (collection.get(uri) ?? []).filter((d) => d.message !== expected));
+    }
+  }
+  updateSummaryStatusBar();
+}
+
+const IGNORE_DEPENDENCY_COMMAND = 'angularCodeQualityToolkit.ignoreDependency';
+
+/** Quick fix: add the package to `angularCodeQuality.depcheck.ignores` (workspace settings). */
+async function ignoreDependency(uri: vscode.Uri, depName: string): Promise<void> {
+  const config = vscode.workspace.getConfiguration('angularCodeQuality', uri);
+  const current = config.get<string[]>('depcheck.ignores', []);
+  await config.update(
+    'depcheck.ignores',
+    addIgnorePattern(current, depName),
+    vscode.ConfigurationTarget.Workspace
+  );
+  const collection = collections.get('depcheck');
+  if (collection) {
     const expected = `${UNUSED_DEPENDENCY_PREFIX}${depName}`;
-    const remaining = (depcheckCollection.get(uri) ?? []).filter((d) => d.message !== expected);
-    depcheckCollection.set(uri, remaining);
+    collection.set(uri, (collection.get(uri) ?? []).filter((d) => d.message !== expected));
     updateSummaryStatusBar();
   }
+  vscode.window.setStatusBarMessage(`Angular Code Quality: depcheck will ignore "${depName}".`, 4000);
+}
+
+const DELETE_UNUSED_FILE_COMMAND = 'angularCodeQualityToolkit.deleteUnusedFile';
+
+/** Offers "Delete unused file" on knip's "Unused file" findings. */
+class UnusedFileCodeActionProvider implements vscode.CodeActionProvider {
+  static readonly providedCodeActionKinds = [vscode.CodeActionKind.QuickFix];
+
+  provideCodeActions(
+    document: vscode.TextDocument,
+    _range: vscode.Range | vscode.Selection,
+    context: vscode.CodeActionContext
+  ): vscode.CodeAction[] {
+    const diagnostic = context.diagnostics.find(
+      (d) => d.source === DIAGNOSTIC_SOURCES.knip && d.message === UNUSED_FILE_MESSAGE
+    );
+    if (!diagnostic) {
+      return [];
+    }
+    const action = new vscode.CodeAction(
+      `Delete unused file "${path.basename(document.uri.fsPath)}"`,
+      vscode.CodeActionKind.QuickFix
+    );
+    action.diagnostics = [diagnostic];
+    action.command = { command: DELETE_UNUSED_FILE_COMMAND, title: 'Delete unused file', arguments: [document.uri] };
+    return [action];
+  }
+}
+
+/** Quick fix: move an unused file to the trash (after confirming) and drop its findings. */
+async function deleteUnusedFile(uri: vscode.Uri): Promise<void> {
+  const name = path.basename(uri.fsPath);
+  const choice = await vscode.window.showWarningMessage(
+    `Delete "${name}"? knip found no references to it. It will be moved to the trash, so you can restore it.`,
+    { modal: true },
+    'Move to Trash'
+  );
+  if (choice !== 'Move to Trash') {
+    return;
+  }
+  try {
+    await vscode.workspace.fs.delete(uri, { useTrash: true });
+  } catch (err) {
+    void vscode.window.showErrorMessage(
+      `Couldn't delete ${name}: ${err instanceof Error ? err.message : String(err)}`
+    );
+    return;
+  }
+  for (const collection of collections.values()) {
+    collection.delete(uri);
+  }
+  updateSummaryStatusBar();
+}
+
+const FIX_FILE_COMMAND = 'angularCodeQualityToolkit.fixFile';
+/** Tools whose findings can be auto-fixed one file at a time. */
+const FILE_FIXABLE: readonly ToolKey[] = ['eslint', 'angular-template', 'stylelint'];
+
+/** Offers "Fix all auto-fixable … problems in this file" on ESLint / stylelint findings. */
+class FixFileCodeActionProvider implements vscode.CodeActionProvider {
+  static readonly providedCodeActionKinds = [vscode.CodeActionKind.QuickFix];
+
+  provideCodeActions(
+    document: vscode.TextDocument,
+    _range: vscode.Range | vscode.Selection,
+    context: vscode.CodeActionContext
+  ): vscode.CodeAction[] {
+    const actions: vscode.CodeAction[] = [];
+    for (const key of FILE_FIXABLE) {
+      const diagnostics = context.diagnostics.filter((d) => d.source === DIAGNOSTIC_SOURCES[key]);
+      if (diagnostics.length === 0) {
+        continue;
+      }
+      const label = key === 'stylelint' ? 'stylelint' : 'ESLint';
+      const action = new vscode.CodeAction(
+        `Fix all auto-fixable ${label} problems in this file`,
+        vscode.CodeActionKind.QuickFix
+      );
+      action.diagnostics = diagnostics;
+      action.command = { command: FIX_FILE_COMMAND, title: 'Fix file', arguments: [document.uri, key] };
+      actions.push(action);
+    }
+    return actions;
+  }
+}
+
+/**
+ * Run `eslint --fix` / `stylelint --fix` on one file and replace that file's
+ * findings with what's left (the tools print the remaining problems after
+ * fixing). Much faster than a whole-project `--fix` when you're on one file.
+ */
+async function fixFile(uri: vscode.Uri, key: ToolKey): Promise<void> {
+  const folder = vscode.workspace.getWorkspaceFolder(uri);
+  if (!folder || !FILE_FIXABLE.includes(key)) {
+    return;
+  }
+  const document = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString());
+  if (document?.isDirty) {
+    await document.save();
+  }
+  const cwd = folder.uri.fsPath;
+  const isStyle = key === 'stylelint';
+  const toolForInstall: ToolKey = isStyle ? 'stylelint' : 'eslint';
+  if (detectToolInstall(cwd, toolForInstall) === 'missing') {
+    notifyToolMissing(toolForInstall, folder, false);
+    return;
+  }
+  const pm = await resolvePackageManager(cwd);
+  const rel = shellArg(path.relative(cwd, uri.fsPath));
+  const command = isStyle
+    ? `${binRunner(pm)} stylelint ${rel} --fix --formatter json`
+    : `${binRunner(pm)} eslint ${rel} --fix --format json`;
+  const output = getOutputChannel(getConfig().revealOutput);
+  output.appendLine(`\n> ${command}`);
+
+  const cts = new vscode.CancellationTokenSource();
+  const name = path.basename(uri.fsPath);
+  const result = await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Window, title: `Angular Code Quality: fixing ${name}…` },
+    () => spawnCommand(command, cwd, output, cts.token)
+  );
+  cts.dispose();
+
+  if (isToolMissing(result)) {
+    notifyToolMissing(toolForInstall, folder, false);
+    return;
+  }
+  const raw = result.stdout.trim() || result.stderr.trim();
+  const target = pathKey(uri.fsPath, CASE_INSENSITIVE_PATHS);
+  const issues = (isStyle ? parseStylelintOutput : parseEslintOutput)(raw, cwd).filter(
+    (i) => pathKey(i.file, CASE_INSENSITIVE_PATHS) === target
+  );
+  if (issues.length === 0 && result.code !== 0 && result.code !== null) {
+    notifyToolFailed(key, `Angular Code Quality — couldn't fix ${name} (exit code ${result.code}). See the output channel.`, false);
+    return;
+  }
+
+  const filtered = await filterIssues(folder, key, issues);
+  collections.get(key)?.set(
+    uri,
+    filtered.kept.map((i) => toDiagnostic(i, key).diagnostic)
+  );
+  updateSummaryStatusBar();
+  vscode.window.setStatusBarMessage(
+    `Angular Code Quality: fixed ${name} — ${pluralizeProblems(filtered.kept.length)} left.`,
+    5000
+  );
 }
 
 const REMOVE_UNUSED_EXPORT_COMMAND = 'angularCodeQualityToolkit.removeUnusedExport';
@@ -1828,7 +2552,11 @@ class UnusedExportCodeActionProvider implements vscode.CodeActionProvider {
   ): vscode.CodeAction[] {
     const actions: vscode.CodeAction[] = [];
     for (const diagnostic of context.diagnostics) {
-      if (diagnostic.source !== DIAGNOSTIC_SOURCES['ts-prune']) {
+      const fromTsPrune = diagnostic.source === DIAGNOSTIC_SOURCES['ts-prune'];
+      const fromKnip =
+        diagnostic.source === DIAGNOSTIC_SOURCES.knip &&
+        (diagnostic.message.startsWith(UNUSED_EXPORT_PREFIX) || diagnostic.message.startsWith('Unused type: '));
+      if (!fromTsPrune && !fromKnip) {
         continue;
       }
       const lineNo = diagnostic.range.start.line;
@@ -1890,14 +2618,18 @@ async function removeUnusedExport(uri: vscode.Uri, lineNo: number): Promise<void
     return;
   }
 
-  const tsPruneCollection = collections.get('ts-prune');
-  if (tsPruneCollection) {
-    const remaining = (tsPruneCollection.get(uri) ?? []).filter(
-      (d) => d.range.start.line !== lineNo
-    );
-    tsPruneCollection.set(uri, remaining);
-    updateSummaryStatusBar();
+  for (const key of ['ts-prune', 'knip'] as const) {
+    const collection = collections.get(key);
+    if (collection) {
+      collection.set(
+        uri,
+        (collection.get(uri) ?? []).filter(
+          (d) => d.range.start.line !== lineNo || (key === 'knip' && d.message === UNUSED_FILE_MESSAGE)
+        )
+      );
+    }
   }
+  updateSummaryStatusBar();
 }
 
 // --- Activation -------------------------------------------------------------
@@ -1946,6 +2678,20 @@ export function activate(context: vscode.ExtensionContext): void {
     cmd('runKnip', () => runSingleTool('knip')),
     cmd('runTemplateLint', () => runSingleTool('angular-template')),
     cmd('runMadge', () => runSingleTool('madge')),
+    cmd('runAngularChecks', () => runSingleTool('angular')),
+    cmd('createBaseline', () => createBaseline()),
+    cmd('clearBaseline', () => clearBaseline()),
+    cmd('toggleChangedFilesOnly', () => toggleChangedFilesOnly()),
+    cmd('showHealthReport', () => showHealthReport()),
+    cmd('exportHtmlReport', () => exportHtmlReport()),
+    cmd('ignoreDependency', (uri: unknown, name: unknown) =>
+      uri instanceof vscode.Uri && typeof name === 'string' ? ignoreDependency(uri, name) : undefined
+    ),
+    cmd('deleteUnusedFile', (uri: unknown) => (uri instanceof vscode.Uri ? deleteUnusedFile(uri) : undefined)),
+    cmd('fixFile', (uri: unknown, key: unknown) => {
+      const tool = asToolKey(key);
+      return uri instanceof vscode.Uri && tool ? fixFile(uri, tool) : undefined;
+    }),
     cmd('exportReport', () => exportReport()),
     cmd('fixEslint', () => fixTool('eslint')),
     cmd('fixStylelint', () => fixTool('stylelint')),
@@ -1996,6 +2742,18 @@ export function activate(context: vscode.ExtensionContext): void {
       new UnusedExportCodeActionProvider(),
       { providedCodeActionKinds: UnusedExportCodeActionProvider.providedCodeActionKinds }
     ),
+    // Quick fix: "Delete unused file" on knip findings (any file type).
+    vscode.languages.registerCodeActionsProvider(
+      { scheme: 'file' },
+      new UnusedFileCodeActionProvider(),
+      { providedCodeActionKinds: UnusedFileCodeActionProvider.providedCodeActionKinds }
+    ),
+    // Quick fix: "Fix all auto-fixable … problems in this file" on ESLint / stylelint findings.
+    vscode.languages.registerCodeActionsProvider(
+      { scheme: 'file' },
+      new FixFileCodeActionProvider(),
+      { providedCodeActionKinds: FixFileCodeActionProvider.providedCodeActionKinds }
+    ),
     // Run-on-save: re-run the relevant tool(s) when a file is saved (opt-in).
     vscode.workspace.onDidSaveTextDocument(handleDidSave),
     // Multi-root: the sidebar follows the folder of the file being edited.
@@ -2007,7 +2765,9 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('angularCodeQuality')) {
+        changedFilesCache.clear();
         toolsTree?.refresh();
+        updateViewDescription();
       }
     })
   );
@@ -2019,10 +2779,13 @@ export function activate(context: vscode.ExtensionContext): void {
     if (installRefreshTimer) {
       clearTimeout(installRefreshTimer);
     }
-    installRefreshTimer = setTimeout(() => refreshInstallStates(), 1500);
+    installRefreshTimer = setTimeout(() => {
+      refreshInstallStates();
+      updateViewDescription();
+    }, 1500);
   };
   const watcher = vscode.workspace.createFileSystemWatcher(
-    '**/{package.json,node_modules/.package-lock.json,node_modules/.modules.yaml,node_modules/.yarn-state.yml}'
+    `**/{package.json,${BASELINE_FILE},node_modules/.package-lock.json,node_modules/.modules.yaml,node_modules/.yarn-state.yml}`
   );
   context.subscriptions.push(
     watcher,
@@ -2058,6 +2821,10 @@ export function deactivate(): void {
   }
   pendingRunOnSave.clear();
   runRegistry.cancelAll();
+  healthPanel?.dispose();
+  healthPanel = undefined;
+  changedFilesCache.clear();
+  baselineHidden.clear();
   outputChannel?.dispose();
   projectStatusBar?.dispose();
   projectStatusBar = undefined;

@@ -4,6 +4,20 @@ All notable changes to the Angular Code Quality Toolkit extension are documented
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-01
+
+### Added
+
+- **Built-in Angular checks.** New command **Find unused components, directives and pipes**. Nothing to install; it runs as part of **Run all checks** in any project with `@angular/core` and reports into its own `angular-quality-angular` source. A declaration is flagged only when its selector or pipe name is in no template **and** its class isn't referenced outside imports and `declarations` / `imports` / `exports` arrays **and** its file isn't lazy-loaded (`import('…')`) or re-exported. Decorators inside strings and comments are ignored. Opt-in `angularCodeQuality.angular.suggestOnPush` also suggests `ChangeDetectionStrategy.OnPush`.
+- **Health report.** **Show health report** opens a page with a 1–100 score and A–E grade, per-tool counts with the change since the last run, a trend chart across recent runs, and the files with the most findings. **Export health report (HTML)** saves it as a standalone file.
+- **Baseline mode.** **Create / update baseline** records the current findings in `.angular-code-quality-baseline.json` (commit it to share) and hides them, so only new problems show. Findings are matched by tool, file and message, not by line, so edits don't bring them back. **Remove baseline** undoes it.
+- **Changed files only.** **Toggle: only show problems in changed files** (setting `angularCodeQuality.onlyChangedFiles`) limits findings to files edited, staged or untracked in git. `angularCodeQuality.changedFilesBase` (e.g. `origin/main`) also includes everything changed on the branch.
+- **More quick fixes:**
+  - **Fix all auto-fixable ESLint / stylelint problems in this file**: runs `--fix` on one file and shows what's left.
+  - **Delete unused file** for knip's unused-file findings: asks first, then moves the file to the trash.
+  - **Remove unused dependency** and **Remove export keyword** now also work on knip findings.
+  - **Ignore "&lt;name&gt;" in depcheck results** adds a package to `angularCodeQuality.depcheck.ignores`.
+
 ## [0.8.0] - 2026-09-30
 
 ### Added

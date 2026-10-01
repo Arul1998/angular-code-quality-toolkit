@@ -43,10 +43,14 @@ export class ToolsTreeProvider implements vscode.TreeDataProvider<ToolKey> {
     // Legacy tools (ts-prune, depcheck) are only shown once they're installed or
     // have been run, so new users see the recommended set.
     return TOOLS.filter((t) => {
+      const state = this.getState(t.key);
+      if (t.builtin) {
+        // Built-in checks only apply where their package (e.g. @angular/core) is.
+        return state.install !== 'missing';
+      }
       if (!t.legacy) {
         return true;
       }
-      const state = this.getState(t.key);
       return state.install !== 'missing' || state.status !== 'idle' || state.count > 0;
     }).map((t) => t.key);
   }

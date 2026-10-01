@@ -1,205 +1,194 @@
 # Angular Code Quality Toolkit
 
-Run your Angular code-quality tools — **ESLint, stylelint, knip**, template lint, circular-dependency checks (and the classic ts-prune / depcheck) — from one sidebar in VS Code, and see the results in the **Problems** panel like normal errors and warnings.
+**Find and fix problems in your Angular project without leaving VS Code.**
 
-Click a problem → jump straight to the file and line. No reading raw logs.
+This extension checks your project for mistakes, messy code and things you no longer use. Every problem it finds shows up in VS Code's **Problems** panel. Click one and you jump straight to the right line.
 
-![Demo: running all checks and jumping from a Problems-panel finding to the exact line](https://raw.githubusercontent.com/Arul1998/angular-code-quality-toolkit/main/assets/demo.gif)
+![Demo: running all checks and jumping from a problem to the exact line](https://raw.githubusercontent.com/Arul1998/angular-code-quality-toolkit/main/assets/demo.gif)
 
-<sub>Demo (representative). Runs depcheck, ts-prune, ESLint and stylelint, then surfaces every finding in the Problems panel.</sub>
-
-**Works in** VS Code, and other VS Code–based editors — **Cursor, Windsurf, VSCodium, Gitpod** — via [Open VSX](https://open-vsx.org/extension/arul1998/angular-code-quality-toolkit). Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=arul1998.angular-code-quality-toolkit), or search **"Angular Code Quality Toolkit"** in your editor's Extensions view.
+It works in **VS Code**, **Cursor**, **Windsurf**, **VSCodium** and **Gitpod**. Get it from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=arul1998.angular-code-quality-toolkit) or [Open VSX](https://open-vsx.org/extension/arul1998/angular-code-quality-toolkit), or search for **"Angular Code Quality Toolkit"** in the Extensions view.
 
 ---
 
-## Getting started (1 minute)
+## Get started in 1 minute
 
-1. Open your Angular project. The extension activates by itself when it finds `angular.json` (or `nx.json`).
-2. If recommended tools are missing, it offers to install them. Otherwise click the **shield icon** in the Activity Bar and use **Install / check tools** from the `…` menu.
-3. Click **Run all checks** (▶▶ in the Code Quality view, or from the Command Palette).
-4. Open **View → Problems** and click a finding to jump to it.
+1. **Open your Angular project** in VS Code. The extension starts by itself.
+2. **Install the tools.** If some are missing, a message offers to install them. Just click **Install…**.
+3. **Click the shield icon** 🛡️ in the left sidebar, then press **Run all checks** (▶▶).
+4. **Open the Problems panel** (`View → Problems`) and click any problem to jump to it.
 
-A guided walkthrough is available too: **Angular Code Quality: Get started** in the Command Palette.
-
----
-
-## What it does
-
-- Finds **lint issues** in your `.ts` (ESLint) and, optionally, your `.html` templates
-- Finds **style issues** in your `.css` / `.scss` (stylelint)
-- Finds **unused files, exports and dependencies** (knip — or the legacy ts-prune + depcheck)
-- Finds **circular imports** (madge, optional)
-- Shows everything in **View → Problems**, grouped by file, each tagged with the tool that found it:
-  `angular-quality-eslint`, `angular-quality-stylelint`, `angular-quality-knip`, `angular-quality-template`, `angular-quality-madge`, `angular-quality-ts-prune`, `angular-quality-depcheck`
-
-The extension does **not** bundle these tools. It runs the copies you already have in your project (via npm, yarn, pnpm, or bun — auto-detected from your lockfile), and can install missing ones for you.
+That's it. For a guided tour, open the Command Palette (`Ctrl+Shift+P`) and run **Angular Code Quality: Get started**.
 
 ---
 
-## The Code Quality view
+## What it finds
 
-Click the **shield** icon in the Activity Bar. Every tool has a row with its live status:
-
-| Status | Meaning |
+| Problem | Found by |
 | --- | --- |
-| **clean** | ran, nothing found |
-| **N problems** | ran, findings are in the Problems panel |
-| **running…** | in progress |
-| **failed — see output** | the tool errored; the Output channel has the details |
-| **not installed** | click the row to install it |
+| Code mistakes and bad patterns in your TypeScript | **ESLint** |
+| Mistakes in your CSS / SCSS | **stylelint** |
+| Files, exports and npm packages you don't use anymore | **knip** |
+| Components, directives and pipes that nothing uses | **Built-in Angular check**, nothing to install |
+| Files that import each other in a circle | **madge** (optional) |
+| Mistakes in your HTML templates | **Template lint** (optional) |
 
-Hover a row for its buttons: **Run**, **Fix** (ESLint / stylelint) and **Install**. The title bar has **Run all checks**, **Refresh** and **Clear results**. The `…` menu has **Install / check tools**, **Select Angular project**, **Export report**, **Open settings** and **Get started**. In a monorepo the view's subtitle shows the active project, and in a multi-root workspace it also shows the folder.
-
----
-
-## Commands
-
-Open the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and type "Angular Code Quality".
-
-| Command | What it does |
-| --- | --- |
-| **Run all checks** | Runs every installed tool (or the ones in `angularCodeQuality.checks`) and shows a combined total. Start here. |
-| **Install / check tools…** | Shows which tools are missing and installs the ones you pick (recommended ones pre-selected). |
-| **Run depcheck** | Unused / missing dependencies. |
-| **Run ts-prune** | Unused TypeScript exports. |
-| **Run ESLint** | Lint issues (uses your `lint` npm script or `ng lint`). |
-| **Run stylelint** | CSS / SCSS issues. |
-| **Run knip** | Unused files, exports, types, enum members, and dependencies in one pass (the maintained successor to ts-prune/depcheck). |
-| **Lint Angular templates (.html)** | Runs ESLint over your HTML templates (via `@angular-eslint/template`). |
-| **Find circular dependencies (madge)** | Reports each dependency cycle in your TypeScript sources. |
-| **Export report (JSON)** | Runs the selected checks and writes `angular-code-quality-report.json` for CI / diffing. |
-| **Fix ESLint problems (--fix)** | Auto-fix fixable ESLint issues, then re-scan and show what's left. |
-| **Fix stylelint problems (--fix)** | Auto-fix fixable stylelint issues, then re-scan and show what's left. |
-| **Add ESLint to Angular project** | Runs `ng add @angular-eslint/schematics` (use if you're still on TSLint). |
-| **Select Angular project** | In a monorepo, choose which `angular.json` project to check. |
-| **Clear results** | Removes only this extension's problems. Leaves TypeScript/ESLint-extension problems alone. |
-| **Open settings** / **Get started** | Jump to this extension's settings, or open the walkthrough. |
+The extension doesn't include these tools. It uses the ones in your project, so you get the same results as your CI. If a tool is missing, the extension installs it for you with one click.
 
 ---
 
-## Where results show up
+## The sidebar
 
-**Problems panel** (`View → Problems`) — this is the main place. Every finding appears as an Error, Warning, or Info with the correct file, line, and message. Click to open it.
+Click the **shield icon** 🛡️ in the left sidebar. You'll see one row for each tool:
 
-- depcheck → unused deps point at `package.json`; missing deps point at the file that uses them.
-- ts-prune → each unused export at its file and line.
-- ESLint / stylelint → each issue at its exact `file:line:column`.
+- ✅ **clean**: no problems found
+- ⚠️ **5 problems**: see them in the Problems panel
+- 🔄 **running…**
+- ⬇️ **not installed**: click the row to install it
 
-**Output panel** (`Angular Code Quality` channel) — kept for logs only: the command that ran, raw tool output, and errors like "tool not installed". You don't need it for the findings themselves.
-
-When a run finishes you get a short notification, e.g. `Code quality scan completed: 14 problems found.`
-
-**Status bar** — after a run, an item shows the current total (e.g. `Quality: 6`) with a per-tool breakdown in its tooltip. Its icon signals severity (error / warning / clean). Click it to jump to the Problems panel; **Clear results** hides it.
+Hover over a row to get buttons to **run**, **fix** or **install** that tool. The buttons at the top let you run everything, refresh, clear results or open the health report. More options are in the `…` menu.
 
 ---
 
-## Quick fixes
+## Fixing problems
 
-Some findings can be fixed in place. On a depcheck **"Unused dependency"** problem in `package.json`, open the code-action menu (the lightbulb, or `Ctrl+.` / `Cmd+.`) and choose **Remove unused dependency "&lt;name&gt;"** — the extension deletes that line, keeps the JSON valid (trailing comma and all), and clears the finding. If the same name is declared twice, it leaves the file alone and tells you, so nothing is removed by guesswork.
+- **Fix everything automatically.** Hover over ESLint or stylelint in the sidebar and click the 🔧 button. It fixes everything that can be fixed safely, then shows what's left.
+- **Fix one file.** Put your cursor on a problem, press `Ctrl+.` (or click the 💡 lightbulb) and choose **Fix all auto-fixable problems in this file**.
+- **One-click fixes** from the 💡 lightbulb:
+  - **Unused package** → remove it from `package.json`
+  - **Unused export** → remove the `export` word (the code still works inside its file)
+  - **Unused file** → delete it (it goes to the trash, so you can get it back)
 
-On a ts-prune **"Unused export"** problem on a simple declaration, choose **Remove export keyword (keep as file-private)** — it drops only the `export` keyword, demoting the symbol instead of deleting it, so any in-file use keeps working. It won't touch re-export or `default` forms (`export {…}`, `export * …`, `export default …`), where removing the keyword wouldn't be safe.
-
-For lint and style issues, **Fix ESLint problems (--fix)** and **Fix stylelint problems (--fix)** run the tool with `--fix` to auto-repair everything fixable, then re-scan so the Problems panel shows only what's left to fix by hand. Open editors are saved first so nothing unsaved is overwritten.
-
----
-
-## Setup
-
-You need an Angular workspace (a folder with `package.json`) and the tools you want to use installed in it. The easiest way is **Install / check tools…**, which installs them for you (and creates a minimal `.stylelintrc.json` if you have no stylelint config). To do it by hand:
-
-```bash
-npx ng add @angular-eslint/schematics
-npm install --save-dev stylelint stylelint-config-standard-scss knip
-```
-
-Optional tools, only if you want their commands:
-
-```bash
-npm install --save-dev madge @angular-eslint/eslint-plugin-template @angular-eslint/template-parser
-npm install --save-dev ts-prune depcheck   # legacy; knip covers both
-```
-
-ESLint runs through your `lint` npm script if you have one, otherwise through `ng lint` (the lint target `ng add @angular-eslint/schematics` creates). If you're still on TSLint, run **Add ESLint to Angular project** first.
-
-To catch unused variables and parameters, add the rule to your ESLint config so **Run ESLint** reports them:
-
-```jsonc
-{
-  "rules": {
-    "@typescript-eslint/no-unused-vars": "error"
-  }
-}
-```
+Your unsaved work is always saved first, so nothing gets lost.
 
 ---
 
-## Settings
+## Health report
 
-**Settings → Extensions → Angular Code Quality Toolkit** (or `settings.json`):
+Click the 📈 **pulse icon** at the top of the sidebar to see your project's health:
 
-| Setting | Default | What it does |
-| --- | --- | --- |
-| `angularCodeQuality.checks` | `[]` (automatic) | Tools **Run all checks**, **Export report** and run-on-save use. Empty = every installed tool, with knip replacing ts-prune + depcheck when installed. List tools (e.g. `["eslint", "angular-template"]`) to choose yourself. |
-| `angularCodeQuality.packageManager` | `auto` | `auto`, `npm`, `yarn`, `pnpm`, or `bun`. `auto` reads your lockfile. Yarn 1 users: set this to `npm`. |
-| `angularCodeQuality.tsPrune.tsconfigPath` | `tsconfig.app.json` | Which tsconfig ts-prune uses. |
-| `angularCodeQuality.stylelint.globs` | `["src/**/*.scss", "src/**/*.css"]` | Files stylelint checks when no style script exists. |
-| `angularCodeQuality.template.globs` | `["src/**/*.html"]` | Templates **Lint Angular templates** checks. Defaults to the selected project's source root in a monorepo. |
-| `angularCodeQuality.eslint.useJsonFormat` | `true` | Ask ESLint for JSON output (more accurate). Turn off if your lint script rejects `--format`. |
-| `angularCodeQuality.stylelint.useJsonFormat` | `true` | Ask stylelint for JSON output. |
-| `angularCodeQuality.depcheck.ignoreAngularImplicit` | `true` | Hide false "unused" hits for packages Angular uses implicitly (`@angular/*`, `zone.js`, `rxjs`, `tslib`, `typescript`, karma/jasmine, builders). |
-| `angularCodeQuality.depcheck.ignores` | `[]` | Extra packages to hide (`*` wildcard, e.g. `@my-scope/*`). |
-| `angularCodeQuality.revealOutputOnRun` | `false` | Auto-open the Output channel on each run. Off by default — findings go to the Problems panel; enable this only to watch raw tool logs. |
-| `angularCodeQuality.runOnSave` | `false` | Re-run the relevant checks automatically when you save a file (see below). |
-| `angularCodeQuality.runOnActivation` | `false` | Run all checks once when the workspace opens (quietly, no popups), so the Problems panel is populated on open. |
+- a **score out of 100** and a grade from **A** (great) to **E** (needs work)
+- how many problems each tool found, and whether that went up or down since last time
+- a chart showing your progress over time
+- the files with the most problems, so you know where to start
+
+You can also save the report as a web page to share with your team (`…` menu → **Export health report (HTML)**).
 
 ---
 
-## Run on save
+## Working on an old project with lots of problems?
 
-Set `angularCodeQuality.runOnSave` to `true` and the extension re-runs the relevant tool whenever you save — the Problems panel stays current without you triggering **Run all checks** by hand:
+Seeing 500 old warnings makes it hard to spot the new ones. Two options help:
 
-| You save… | It re-runs |
-| --- | --- |
-| a `.ts` file | ESLint + ts-prune |
-| a `.html` file | ESLint + Angular template lint |
-| a `.css` / `.scss` file | stylelint |
-| `package.json` | depcheck |
+- **Baseline.** Choose **Create baseline** from the `…` menu. The extension remembers every problem you have today and hides them. From then on you only see **new** problems. Commit the baseline file so your whole team uses it.
+- **Changed files only.** Choose **Only show problems in changed files** from the `…` menu. You'll only see problems in files you've edited, which is great for keeping your own changes clean.
 
-Only tools that **Run all checks** would run are triggered, so a save never runs a tool that isn't installed. (knip and madge are whole-project scans, so run-on-save never triggers them. Run them from the sidebar when you want them.)
+---
 
-Runs happen **quietly** in the background (no notifications) and are **debounced**, so a "Save All" or a formatter re-saving triggers a single run rather than one per file. Off by default.
+## Keep results up to date automatically
+
+Turn these on in **Settings** (search for "Angular Code Quality"):
+
+- **Run on save**: re-checks a file each time you save it.
+- **Run on activation**: checks everything when you open the project.
+
+Both run quietly in the background with no popups.
 
 ---
 
 ## Good to know
 
-- **Monorepo friendly.** Reads `angular.json`, supports apps + libraries and Nx-style `targets`. The active project shows in the status bar — click to switch.
-- **Multi-root friendly.** Commands act on the folder of the file you're editing (or ask), and each folder's results are kept separately.
-- **Never runs a tool twice at once.** Starting a tool while it's already running (say, run-on-save during **Run all checks**) restarts it rather than racing it.
-- **Every run is cancellable** via its progress notification.
-- **Each tool keeps its own results,** so running one tool never wipes another's, and re-running replaces stale results without duplicates.
-- **Pairs well with CI.** Use the extension for fast feedback while editing, then run the same four commands in CI to enforce them on every PR:
-
-  ```bash
-  npx depcheck
-  npx ts-prune -p tsconfig.app.json
-  npm run lint
-  npx stylelint "src/**/*.{css,scss}"
-  ```
-
-> Note on unused CSS: reliably detecting *unused* selectors under Angular's view encapsulation isn't practical, so stylelint here checks for rule violations and invalid CSS, not dead selectors.
+- **Big projects and monorepos are supported.** If your workspace has several Angular apps, click the project name in the status bar to switch between them.
+- **Nothing runs twice.** If you start a check that's already running, it simply restarts.
+- **You can cancel any check** from its progress message.
+- **The status bar** shows your total number of problems (for example `Quality: 6`). Click it to open the Problems panel.
+- **Stuck?** Open `View → Output` and choose **Angular Code Quality** to see exactly what ran.
 
 ---
 
-## Developing this extension
+## Settings
+
+Open **Settings → Extensions → Angular Code Quality Toolkit**. The defaults work for most projects, but here's what you can change:
+
+| Setting | What it does | Default |
+| --- | --- | --- |
+| `checks` | Pick which tools **Run all checks** uses. Leave empty and it picks for you. | empty (automatic) |
+| `runOnSave` | Re-check files when you save them. | off |
+| `runOnActivation` | Check everything when the project opens. | off |
+| `onlyChangedFiles` | Only show problems in files you've changed. | off |
+| `changedFilesBase` | Also include everything changed on your branch, e.g. `origin/main`. | empty |
+| `angular.suggestOnPush` | Suggest the faster `OnPush` change detection for components. | off |
+| `packageManager` | npm, yarn, pnpm or bun. `auto` works it out for you. | auto |
+| `depcheck.ignores` | Packages that depcheck should never report as unused. | empty |
+| `revealOutputOnRun` | Open the log window every time a check runs. | off |
+
+<details>
+<summary>Advanced settings</summary>
+
+| Setting | What it does | Default |
+| --- | --- | --- |
+| `tsPrune.tsconfigPath` | Which tsconfig ts-prune uses. | `tsconfig.app.json` |
+| `stylelint.globs` | Which style files stylelint checks (when you have no stylelint script). | `src/**/*.scss`, `src/**/*.css` |
+| `template.globs` | Which HTML files the template lint checks. | `src/**/*.html` |
+| `eslint.useJsonFormat` | Read ESLint results as JSON (more accurate). Turn off if your lint script complains. | on |
+| `stylelint.useJsonFormat` | Read stylelint results as JSON. | on |
+| `depcheck.ignoreAngularImplicit` | Don't report Angular packages that are used behind the scenes (`@angular/*`, `zone.js`, `rxjs`…). | on |
+
+All settings start with `angularCodeQuality.` in `settings.json`.
+
+</details>
+
+---
+
+## Installing the tools yourself
+
+The easiest way is **Install / check tools…** in the `…` menu. It does this for you. If you'd rather do it by hand:
 
 ```bash
-npm install       # install deps
-npm run compile   # build
-npm run lint      # lint this extension's own code
-npm test          # run the parser/diagnostic unit tests
+npx ng add @angular-eslint/schematics
 ```
 
-Press `F5` in VS Code to launch an Extension Development Host, then open an Angular project and try the commands.
+```bash
+npm install --save-dev stylelint stylelint-config-standard-scss knip
+```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the full setup, testing, and pull-request guide. Bug reports and feature ideas are welcome in [Issues](https://github.com/Arul1998/angular-code-quality-toolkit/issues/new/choose).
+Optional extras:
+
+```bash
+npm install --save-dev madge @angular-eslint/eslint-plugin-template @angular-eslint/template-parser
+```
+
+<details>
+<summary>Questions people ask</summary>
+
+**Does it find unused CSS?**
+No. Angular keeps each component's styles separate, which makes "unused CSS" very hard to detect reliably. stylelint checks your CSS for mistakes instead.
+
+**How does it decide a component is unused?**
+It only reports a component, directive or pipe when it can't find it used anywhere: not in any template, not in any route or code, and not lazy-loaded or exported by a library. If it isn't sure, it stays quiet. Results are marked "possibly unused", so check before you delete.
+
+**How is the health score calculated?**
+`100 ÷ (1 + (3 × errors + warnings) ÷ 50)`. Errors count three times as much as warnings. No problems scores 100, and 50 warnings score 50.
+
+**I still use ts-prune and depcheck. Do they still work?**
+Yes. If you install knip, it does the same job, so the extension uses knip and skips the other two.
+
+**Does it work with pnpm, yarn or bun?**
+Yes. It works out which one you use from your lock file.
+
+</details>
+
+---
+
+## Contributing
+
+```bash
+npm install
+```
+
+```bash
+npm test
+```
+
+Press `F5` in VS Code to try your changes in a new window. See [CONTRIBUTING.md](CONTRIBUTING.md) for more.
+
+Found a bug or have an idea? [Open an issue](https://github.com/Arul1998/angular-code-quality-toolkit/issues/new/choose). We'd love to hear from you.

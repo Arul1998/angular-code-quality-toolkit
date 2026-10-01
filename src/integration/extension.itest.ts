@@ -28,6 +28,15 @@ const CONTRIBUTED_COMMANDS = [
   'angularCodeQualityToolkit.runTool',
   'angularCodeQualityToolkit.fixTool',
   'angularCodeQualityToolkit.installTool',
+  'angularCodeQualityToolkit.runAngularChecks',
+  'angularCodeQualityToolkit.showHealthReport',
+  'angularCodeQualityToolkit.exportHtmlReport',
+  'angularCodeQualityToolkit.createBaseline',
+  'angularCodeQualityToolkit.clearBaseline',
+  'angularCodeQualityToolkit.toggleChangedFilesOnly',
+  'angularCodeQualityToolkit.fixFile',
+  'angularCodeQualityToolkit.deleteUnusedFile',
+  'angularCodeQualityToolkit.ignoreDependency',
 ];
 
 suite('Angular Code Quality Toolkit — integration', () => {
@@ -81,6 +90,9 @@ suite('Angular Code Quality Toolkit — integration', () => {
       'angularCodeQualityToolkit.runTool',
       'angularCodeQualityToolkit.fixTool',
       'angularCodeQualityToolkit.installTool',
+      'angularCodeQualityToolkit.fixFile',
+      'angularCodeQualityToolkit.deleteUnusedFile',
+      'angularCodeQualityToolkit.ignoreDependency',
     ]) {
       await assert.doesNotReject(
         Promise.resolve(vscode.commands.executeCommand(command, 'not-a-tool'))
